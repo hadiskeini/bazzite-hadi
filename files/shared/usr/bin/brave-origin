@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
-# Brave Origin beta launcher. Upstream Brave does NOT read ~/.config/brave-flags.conf, so the flags live here.
-# The install path in the exec line is filled in at build time (files/scripts/brave-origin.sh).
-#
-# exit_type shim: on reboot the session SIGKILLs Brave before it writes its clean-exit flag, so profile.exit_type stays
-# "Crashed", which triggers the "restore?" bubble AND blocks silent session restore. exit_type is not in protection.macs.
-braveRoot="${XDG_CONFIG_HOME:-$HOME/.config}/BraveSoftware"
-for pref in "$braveRoot"/Brave-Origin/*/Preferences "$braveRoot"/Brave-Origin-Beta/*/Preferences; do
-  [ -e "$pref" ] && sed -i 's/"exit_type":[[:space:]]*"Crashed"/"exit_type":"Normal"/g' "$pref"
-done
+# Brave Origin launcher: feature flags have no policy (policies: /etc/brave/policies/managed). Exec path: files/scripts/brave-origin.sh.
 
-# Web-app and site launchers that Brave writes into ~/.local/share/applications take their Exec from
-# CHROME_WRAPPER, else from the raw binary, which would skip the flags below. Repair the ones written before.
+# Brave writes web-app launchers with Exec from CHROME_WRAPPER, else from the raw binary, which skips the flags below.
 export CHROME_WRAPPER=/usr/bin/brave-origin
-for app in "$HOME"/.local/share/applications/brave-*.desktop; do
-  [ -e "$app" ] && sed -i -E "s#^Exec=[^ ]*/(\.local/opt/brave-origin|opt/brave\.com/[^/ ]+)/brave #Exec=$CHROME_WRAPPER #" "$app"
+
+dataDir="${XDG_CONFIG_HOME:-$HOME/.config}/BraveSoftware/Brave-Origin"
+for arg in "$@"; do
+  case "$arg" in --user-data-dir=*) dataDir="${arg#--user-data-dir=}" ;; esac
 done
 
-# --ozone-platform-hint=auto            native Wayland (with WaylandFractionalScaleV1 at 150 %)
-# --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL
-#                                       HEVC/H.265 via VA-API on radeonsi (iOS screen recordings); NOT VaapiVideoDecodeLinuxGL (dud)
-# --disable-quic                        QUIC/HTTP-3 receive path saturated Chrome_IOThread during large downloads
+# A running Brave owns its profile: this call only hands the URL over, so change nothing.
+lock="$(readlink "$dataDir/SingletonLock" 2>/dev/null)"
+pid="${lock##*-}"
+if [ "${lock%-*}" != "$HOSTNAME" ] || [ "$(readlink "/proc/$pid/exe" 2>/dev/null)" != "@BRAVE_DIR@/brave" ]; then
+  # A reboot kills Brave before it writes exit_type "Normal"; "Crashed" shows the restore bubble and blocks session restore.
+  for pref in "$dataDir"/*/Preferences; do
+    grep -q '"exit_type":[[:space:]]*"Crashed"' "$pref" 2>/dev/null &&
+      sed -i 's/"exit_type":[[:space:]]*"Crashed"/"exit_type":"Normal"/g' "$pref"
+  done
+  # Repair launchers written without CHROME_WRAPPER. Change only those: each write makes GNOME reload all apps.
+  rawExec='^Exec=[^ ]*/opt/brave\.com/[^/ ]+/brave '
+  for app in "$HOME"/.local/share/applications/brave-*.desktop; do
+    grep -qE "$rawExec" "$app" 2>/dev/null && sed -i -E "s#$rawExec#Exec=$CHROME_WRAPPER #" "$app"
+  done
+fi
+
+# HEVC/H.265 via VA-API on radeonsi (iOS screen recordings). VaapiVideoDecodeLinuxGL does not work for this.
 exec "@BRAVE_DIR@/brave" \
-  --ozone-platform-hint=auto \
   --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL \
-  --disable-quic \
   "$@"
