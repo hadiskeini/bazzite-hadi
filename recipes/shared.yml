@@ -58,3 +58,6 @@ modules:
       masked:
         - rpm-ostree-countme.timer
         - passim.service          # fwupd's LAN cache server (mDNS, port 27500)
+    user:
+      enabled:
+        - holdsuper.service       # waits for hold-super@hadi.local; holds no device without it
