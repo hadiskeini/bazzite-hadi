@@ -57,3 +57,4 @@ modules:
     system:
       masked:
         - rpm-ostree-countme.timer
+        - passim.service          # fwupd's LAN cache server (mDNS, port 27500)

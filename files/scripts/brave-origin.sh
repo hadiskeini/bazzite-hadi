@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Install the newest Brave Origin BETA rpm from Brave's GitHub releases (no repo publishes it), verify its sha256
-# sidecar, and point the wrapper and launcher at it. Brave uses one tag stream with channel-specific assets per tag,
-# so releases/latest (the release channel) will not do: scan for the newest tag that carries the beta rpm.
+# Install the newest Brave Origin BETA rpm from Brave's GitHub releases (Brave's beta repo lags about a week), verify its sha256
+# sidecar and signature, and point the wrapper and launcher at it.
 set -euo pipefail
-read -r ver asset < <(python3 - <<'PY'
-import json, re, urllib.request
-pat = re.compile(r"^brave-origin-beta-([0-9.]+)-1\.x86_64\.rpm$")
-for page in (1, 2, 3):
-    url = f"https://api.github.com/repos/brave/brave-browser/releases?per_page=100&page={page}"
-    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
-    for rel in json.load(urllib.request.urlopen(req, timeout=30)):
-        for a in rel.get("assets", []):
-            m = pat.match(a["name"])
-            if m:
-                print(m.group(1), a["name"]); raise SystemExit
-raise SystemExit("no brave-origin-beta rpm found")
-PY
-)
+# Newest release tag that carries the beta rpm. Tags come from git and the probe from the release download
+# servers: neither counts against the GitHub API limit (60 requests an hour per IP on shared CI runners).
+ver=""
+tags="$(git ls-remote --tags https://github.com/brave/brave-browser 'refs/tags/v1.*' \
+  | awk '{print $2}' | grep -v '\^{}$' | sed 's#refs/tags/v##' | grep -E '^1\.[0-9]+\.[0-9]+$')"
+# Nightly tags sit one or two minor versions above beta: walk the minors down, probing the five newest patches of each.
+for minor in $(cut -d. -f2 <<<"$tags" | sort -rnu | head -6); do
+  for tag in $(grep -E "^1\.$minor\." <<<"$tags" | sort -rV | head -5); do
+    if curl -fsSIL -o /dev/null "https://github.com/brave/brave-browser/releases/download/v$tag/brave-origin-beta-$tag-1.x86_64.rpm" 2>/dev/null; then
+      ver=$tag; break 2
+    fi
+  done
+done
+[ -n "$ver" ] || { echo "no brave-origin-beta rpm found in the newest release tags" >&2; exit 1; }
+asset="brave-origin-beta-$ver-1.x86_64.rpm"
 base="https://github.com/brave/brave-browser/releases/download/v$ver"
 tmp="$(mktemp -d)"
 curl -fsSL -o "$tmp/$asset" "$base/$asset"
@@ -33,7 +33,7 @@ rm -rf "$tmp"
 # The rpm's %post registers /usr/bin/brave-origin as an alternatives link; our wrapper already owns that path.
 alternatives --remove-all brave-origin 2>/dev/null || true
 
-dir="$(dirname "$(ls -d /opt/brave.com/*/brave | head -1)")"
+dir="$(dirname "$(find /opt/brave.com -mindepth 2 -maxdepth 2 -name brave -type f | head -1)")"
 sed -i "s#@BRAVE_DIR@#$dir#" /usr/bin/brave-origin
 # Our launcher (brave-origin.desktop, the ID mimeapps.list uses) replaces the rpm's own; icons under that name.
 find /usr/share/applications \( -name 'brave-origin*.desktop' -o -name 'com.brave.Origin*.desktop' \) ! -name brave-origin.desktop -delete
