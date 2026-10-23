@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.eq-indicator" path="/org/gnome/shell/extensions/eq-indicator/">
+    <key name="click-preset" type="s">
+      <choices>
+        <choice value=""/>
+        <choice value="studio"/>
+        <choice value="boost"/>
+        <choice value="headphones"/>
+        <choice value="earpods"/>
+        <choice value="off"/>
+      </choices>
+      <default>'headphones'</default>
+      <summary>Preset a click on the tile switches to</summary>
+      <description>Clicking the tile switches to this preset; clicking it again while it is active goes back to the default-preset (Studio Monitors (LP-6) when that is empty). Empty = clicking opens the preset menu.</description>
+    </key>
+    <key name="default-preset" type="s">
+      <choices>
+        <choice value=""/>
+        <choice value="studio"/>
+        <choice value="boost"/>
+        <choice value="headphones"/>
+        <choice value="earpods"/>
+        <choice value="off"/>
+      </choices>
+      <default>''</default>
+      <summary>Preset at login</summary>
+      <description>The extension switches to this preset once per session, after eq-default.service has applied Studio Monitors (LP-6). It is also the home preset: the top bar shows an icon only while another preset is active. Empty = keep the preset of eq-default.service.</description>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.hold-super" path="/org/gnome/shell/extensions/hold-super/">
+    <key name="hold-ms" type="i">
+      <range min="50" max="2000"/>
+      <default>100</default>
+      <summary>Hold threshold (ms)</summary>
+      <description>Released sooner = the button's own click; held longer = Super. Using another mouse button or the wheel while it is down turns it into Super at once.</description>
+    </key>
+    <key name="overview-on-release" type="b">
+      <default>true</default>
+      <summary>Open Activities on a lone hold</summary>
+      <description>Like the Super key on the keyboard: holding past the threshold and releasing without using it opens Activities.</description>
+    </key>
+    <key name="fullscreen-is-game" type="b">
+      <default>false</default>
+      <summary>Treat every fullscreen window as a game</summary>
+    </key>
+    <key name="game-classes" type="as">
+      <default>[]</default>
+      <summary>Extra window classes counted as games</summary>
+      <description>Matched case-insensitively against the window class / app id, for native games the automatic detection misses.</description>
+    </key>
+  </schema>
+</schemalist>

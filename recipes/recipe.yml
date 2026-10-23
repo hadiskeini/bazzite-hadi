@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
+# pc-bazzite: Bazzite GNOME (testing) with Fedora branding, trimmed, and this PC's system config built in.
+# shared.yml = preferences valid on any Bazzite machine; pc.yml = facts about this PC.
+name: bazzite-hadi
+description: Bazzite GNOME with Fedora branding, trimmed, with the pc-bazzite system config built in
+base-image: ghcr.io/ublue-os/bazzite-gnome
+image-version: testing
+
+stages:
+  - name: holdsuper
+    from: registry.fedoraproject.org/fedora:45
+    modules:
+      - type: files
+        files:
+          - source: src/holdsuper
+            destination: /src
+      - type: script
+        snippets:
+          - dnf -y install gcc && mkdir -p /out && gcc -O2 -Wall -Wextra -o /out/holdsuper /src/holdsuper.c
+
+  - name: vkpace
+    from: registry.fedoraproject.org/fedora:45
+    modules:
+      - type: files
+        files:
+          - source: src/vkpace
+            destination: /src
+      - type: script
+        snippets:
+          - dnf -y install gcc vulkan-headers && mkdir -p /out && gcc -shared -fPIC -O2 -Wall -Wno-misleading-indentation -o /out/libvkpace.so /src/vkpace.c -lm -lpthread
+
+  - name: scyrox-tools
+    from: registry.fedoraproject.org/fedora:45
+    modules:
+      - type: script
+        snippets:
+          # Pinned commit: the repo has no tags. Bump it here to update.
+          - dnf -y install python3 git && python3 -m venv /usr/lib/scyrox-tools && /usr/lib/scyrox-tools/bin/pip install --no-cache-dir "git+https://github.com/hadiskeini/scyrox-tools@5f26ad42cf939c6cb5d31597732d2dde2ce4f16a"
+
+modules:
+  - from-file: shared.yml
+  - from-file: pc.yml
+  # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
+  - type: script
+    snippets:
+      - rm -rf /run/dnf /run/selinux-policy
+  # Last: puts the restored boot splash and the modprobe.d/modules-load.d changes into the initramfs.
+  - type: initramfs
+  - type: signing

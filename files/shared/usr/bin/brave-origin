@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Brave Origin beta launcher. Upstream Brave does NOT read ~/.config/brave-flags.conf, so the flags live here.
+# @BRAVE_DIR@ is replaced at build time with the RPM's install directory (recipes/shared.yml).
+#
+# exit_type shim: on reboot the session SIGKILLs Brave before it writes its clean-exit flag, so profile.exit_type stays
+# "Crashed", which triggers the "restore?" bubble AND blocks silent session restore. exit_type is not in protection.macs.
+braveRoot="${XDG_CONFIG_HOME:-$HOME/.config}/BraveSoftware"
+for pref in "$braveRoot"/Brave-Origin/*/Preferences "$braveRoot"/Brave-Origin-Beta/*/Preferences; do
+  [ -e "$pref" ] && sed -i 's/"exit_type":[[:space:]]*"Crashed"/"exit_type":"Normal"/g' "$pref"
+done
+
+# Web-app and site launchers that Brave writes into ~/.local/share/applications take their Exec from
+# CHROME_WRAPPER, else from the raw binary, which would skip the flags below. Repair the ones written before.
+export CHROME_WRAPPER=/usr/bin/brave-origin
+for app in "$HOME"/.local/share/applications/brave-*.desktop; do
+  [ -e "$app" ] && sed -i -E "s#^Exec=[^ ]*/(\.local/opt/brave-origin|opt/brave\.com/[^/ ]+)/brave #Exec=$CHROME_WRAPPER #" "$app"
+done
+
+# --ozone-platform-hint=auto            native Wayland (with WaylandFractionalScaleV1 at 150 %)
+# --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL
+#                                       HEVC/H.265 via VA-API on radeonsi (iOS screen recordings); NOT VaapiVideoDecodeLinuxGL (dud)
+# --disable-quic                        QUIC/HTTP-3 receive path saturated Chrome_IOThread during large downloads
+exec "@BRAVE_DIR@/brave" \
+  --ozone-platform-hint=auto \
+  --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL \
+  --disable-quic \
+  "$@"

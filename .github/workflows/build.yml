@@ -1,0 +1,31 @@
+name: bluebuild
+on:
+  schedule:
+    - cron: "15 */6 * * *"   # several times a day; a later change: build only when the base digest changed
+  push:
+    paths-ignore:
+      - "**.md"
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  bluebuild:
+    name: Build image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Build image
+        uses: blue-build/github-action@v1.13
+        with:
+          recipe: recipe.yml
+          cosign_private_key: ${{ secrets.SIGNING_SECRET }}
+          registry_token: ${{ github.token }}
+          pr_event_number: ${{ github.event.number }}
+          maximize_build_space: true
+          # Rebuild the layers so files removed from the base are really gone, and updates download in smaller pieces.
+          rechunk: true

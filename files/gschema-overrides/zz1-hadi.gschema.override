@@ -1,0 +1,39 @@
+# Loaded after Bazzite's zz0-* overrides. The recipe deletes Bazzite's theme, dock, folder and extension overrides
+# (zz0-01..04) and keeps zz0-00 (behaviour); these keys restore what is wanted from them.
+
+# Blur my Shell defaults that came from Bazzite's theme override (zz0-04). Your dconf holds only the keys you changed.
+[org.gnome.shell.extensions.blur-my-shell.panel]
+blur=true
+static-blur=true
+unblur-in-overview=true
+
+[org.gnome.shell.extensions.blur-my-shell.overview]
+style-components=3
+
+[org.gnome.shell.extensions.blur-my-shell.appfolder]
+blur=false
+style-dialogs=0
+
+[org.gnome.shell.extensions.blur-my-shell.applications]
+blur=false
+opacity=255
+whitelist=['org.gnome.Ptyxis']
+
+[org.gnome.shell.extensions.blur-my-shell.screenshot]
+blur=true
+
+[org.gnome.shell.extensions.blur-my-shell.lockscreen]
+blur=true
+
+[org.gnome.shell.extensions.blur-my-shell.dash-to-dock]
+blur=true
+
+# GNOME's own defaults, undoing zz0-00: Alt+Tab switches apps, NumLock stays off at login.
+[org.gnome.desktop.wm.keybindings]
+switch-applications=['<Super>Tab','<Alt>Tab']
+switch-applications-backward=['<Shift><Super>Tab','<Shift><Alt>Tab']
+switch-windows=@as []
+switch-windows-backward=@as []
+
+[org.gnome.desktop.peripherals.keyboard]
+numlock-state=false

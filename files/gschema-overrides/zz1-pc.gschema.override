@@ -1,0 +1,3 @@
+# RX 9070: the SMU can fail to resume from suspend, so a fresh account never suspends on idle (user dconf still wins).
+[org.gnome.settings-daemon.plugins.power]
+sleep-inactive-ac-type='nothing'

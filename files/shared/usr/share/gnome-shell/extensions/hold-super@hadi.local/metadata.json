@@ -1,0 +1,8 @@
+{
+  "uuid": "hold-super@hadi.local",
+  "name": "Hold Super",
+  "description": "Front end for the holdsuper daemon (bazzite-system portable/holdsuper): a mouse side button stays itself when tapped and becomes Super when held. While a game is focused the daemon lets go of the mouse entirely, so games get the stock input path with nothing added. Hold threshold and game detection are set in the preferences.",
+  "shell-version": ["50", "51"],
+  "version": 1,
+  "settings-schema": "org.gnome.shell.extensions.hold-super"
+}

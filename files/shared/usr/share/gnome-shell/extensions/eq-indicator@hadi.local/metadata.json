@@ -1,0 +1,13 @@
+{
+  "uuid": "eq-indicator@hadi.local",
+  "name": "EQ Preset Indicator",
+  "description": "Quick Settings tile for the EVO4 EQ smart-filter presets driven by the eq-preset script. Shows the active profile with its icon; clicking toggles between the default profile and the one picked in the preferences (DT-990 headphones by default), the arrow opens a menu to jump straight to any profile. Adds a top-bar icon only while a non-default profile is active. Stays in sync with the <Super><Alt>m/h/e/b hotkeys by watching $XDG_RUNTIME_DIR/eq-preset.active.",
+  "shell-version": [
+    "48",
+    "49",
+    "50",
+    "51"
+  ],
+  "version": 1,
+  "settings-schema": "org.gnome.shell.extensions.eq-indicator"
+}

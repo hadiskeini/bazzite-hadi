@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# Facts about pc-bazzite: Ryzen 7 5800X3D, RX 9070, wired only, no tablet.
+modules:
+  - type: files
+    files:
+      - source: pc
+        destination: /
+
+  # One GPU: cardwire's GPU switching does nothing here, but gnome-shell needs switcheroo-control, which cardwire
+  # stands in for. A plain removal would take gnome-shell with it, so swap it for Fedora's small one.
+  - type: containerfile
+    snippets:
+      - RUN dnf -y remove cardwire-gui && dnf -y swap cardwire switcheroo-control
+
+  - type: dnf
+    repos:
+      copr:
+        - ilyaz/LACT
+    install:
+      packages:
+        - lact                 # replaces the LACT Flatpak and its helper-written /etc unit
+    remove:
+      packages:
+        - thermald             # Intel only
+        - intel-lpmd
+        - qemu-guest-agent     # bare metal
+        - open-vm-tools
+        - virtualbox-guest-additions
+        - system76-driver      # their modules-load.d files load the modules on every boot
+        - kmod-system76-driver
+        - system76-io
+        - kmod-system76-io
+        - kvmfr
+        - kmod-kvmfr
+        - gcadapter_oc
+        - kmod-gcadapter_oc
+        - ryzen_smu
+        - kmod-ryzen_smu
+        - ryzen_smu-akmod-modules
+        - openrazer
+        - kmod-openrazer
+        - fw-ectool            # Framework laptops
+        - fw-fanctrl
+        - jupiter-sd-mounting-btrfs
+        - linux-cec
+        - inputattach-cec-units
+
+  - type: copy
+    from: scyrox-tools
+    src: /usr/lib/scyrox-tools
+    dest: /usr/lib/scyrox-tools
+  - type: script
+    snippets:
+      - for b in scyroxd scyrox scyrox-tui; do [ -e /usr/lib/scyrox-tools/bin/$b ] && ln -sf /usr/lib/scyrox-tools/bin/$b /usr/bin/$b; done; test -x /usr/bin/scyroxd
+
+  - type: kargs
+    kargs:
+      - mitigations=off                    # LAN-only single-user box; browsers handle JS Spectre
+      - mem_sleep_default=s2idle           # RX 9070 SMU resume hang on S3
+      - video=DP-3:3840x2160@144e          # 144 Hz console and splash on the 4K panel
+      - amdgpu.ppfeaturemask=0xfff7ffff    # LACT overdrive
+
+  - type: gschema-overrides
+    include:
+      - zz1-pc.gschema.override
+
+  - type: systemd
+    system:
+      enabled:
+        - lactd.service
+      masked:
+        - ModemManager.service             # no modem
+        - wpa_supplicant.service           # no Wi-Fi radio
+        - bazzite-iwd-migration.service    # unmasks wpa_supplicant on every boot
+        - fstrim.timer                     # discard=async in fstab
+        - nfs-client.target                # no NFS (with the sunrpc blacklist)
+        - rpc_pipefs.target
+        - var-lib-nfs-rpc_pipefs.mount
+        - rpc-statd-notify.service
+        - gssproxy.service

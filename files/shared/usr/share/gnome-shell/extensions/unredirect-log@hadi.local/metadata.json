@@ -1,0 +1,9 @@
+{
+  "uuid": "unredirect-log@hadi.local",
+  "name": "Unredirect Log",
+  "description": "Watches the compositor's unredirect inhibit count. A leaked disable_unredirect blocks VRR and direct scanout for every fullscreen window until the next login; this writes the count and the outstanding callers to $XDG_RUNTIME_DIR/unredirect-log.json for `sys`, and logs the callers to the journal when the inhibit is held too long.",
+  "shell-version": ["50", "51"],
+  "session-modes": ["user", "unlock-dialog"],
+  "version": 1,
+  "settings-schema": null
+}

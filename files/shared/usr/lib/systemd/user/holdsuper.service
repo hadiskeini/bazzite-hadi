@@ -1,0 +1,15 @@
+# Mouse side button: tap = itself (Forward), hold = Super (built into the image). Driven by the GNOME extension
+# hold-super@hadi.local; with the extension absent or a game focused it holds no device at all (stock input path).
+# Needs input + uinput group membership (already the case), nothing else.
+[Unit]
+Description=holdsuper (mouse button tap/hold to Super)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/holdsuper
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

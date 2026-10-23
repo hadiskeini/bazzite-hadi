@@ -1,0 +1,26 @@
+# pc-bazzite udev rules (image, host layer). Each block names the MIGRATION step that decided it.
+#
+# --- hidraw for browser/CLI configurators (MIGRATION 7.1: delete if Bazzite's rules already grant access at COLD boot)
+#   3554 = Scyrox V8 dongle (scyrox.net + scyrox CLI/TUI), 19f5 = NuPhy Air75 V3 (drive.nuphy.io).
+#   GROUP+MODE is the deterministic grant: uaccess ACLs are skipped for devices that enumerate before a session exists.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3554", MODE="0660", GROUP="input", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="19f5", MODE="0660", GROUP="input", TAG+="uaccess"
+#   scyroxd's virtual battery device sits under uhid with no USB parent, so idVendor does not match it, and
+#   Bazzite's 92-viia.rules makes every other hidraw node 0666.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="0003:3554:*", MODE="0660", GROUP="input"
+
+# --- /dev/uhid for scyroxd running as a USER unit (decision 8): the daemon exposes the mouse battery as a virtual HID device
+KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0660", GROUP="input"
+
+# --- package power for Mission Center: energy_uj is 0400 root by default (MIGRATION 7.4: delete if already readable)
+SUBSYSTEM=="powercap", KERNEL=="intel-rapl*", RUN+="/usr/bin/chmod a+r /sys/%p/energy_uj"
+
+# --- GPP0 spurious wake (MIGRATION 7.3). The NVMe at 01:00.0 fires a PCIe PME on S3 power-down that wakes the box
+#   ~6 s after every suspend via root port 00:01.1 (ACPI GPE 0x04, sole owner per the DSDT _PRW tables). Was an S3-only
+#   behaviour; s2idle is now the default. Uncomment only if the suspend test shows the wake — or use `ujust toggle-gigabyte-wake-fix`.
+#ACTION=="add|change", SUBSYSTEM=="pci", KERNEL=="0000:00:01.1", ATTR{power/wakeup}="disabled"
+
+# --- /dev/uinput for holdsuper (user unit, portable/holdsuper) and later the PyroFling latency layer (Mora, decision 9).
+#   Bazzite only tags it uaccess, an ACL that appears when the session starts: a user unit that starts earlier gets
+#   EACCES (seen 2026-10-15 at boot). `groupadd uinput` is done by apply.sh while this line is active.
+SUBSYSTEM=="misc", KERNEL=="uinput", MODE="0660", GROUP="uinput", OPTIONS+="static_node=uinput"

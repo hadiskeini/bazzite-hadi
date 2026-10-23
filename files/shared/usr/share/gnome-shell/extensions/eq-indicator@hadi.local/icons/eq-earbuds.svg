@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg height="16px" viewBox="0 0 16 16" width="16px" xmlns="http://www.w3.org/2000/svg">
+  <!-- Wired earbuds, all white (NOT symbolic, so the colour is kept as-is):
+       two earpieces up top, a Y-cable converging to a junction and a single
+       lead running down. -->
+  <g fill="none" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 3.5 4.5 C 3.5 9 8 8.5 8 11.5 L 8 15"/>
+    <path d="M 12.5 4.5 C 12.5 9 8 8.5 8 11.5"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="3.5" cy="3" r="2.2"/>
+    <circle cx="12.5" cy="3" r="2.2"/>
+  </g>
+</svg>

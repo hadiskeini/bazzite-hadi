@@ -1,0 +1,14 @@
+{
+  "file_format_version": "1.2.1",
+  "layer": {
+    "name": "VK_LAYER_HADI_vkpace",
+    "type": "GLOBAL",
+    "library_path": "/usr/lib64/vkpace/libvkpace.so",
+    "library_arch": "64",
+    "api_version": "1.4.0",
+    "implementation_version": "1",
+    "description": "frame pacer on the VK_AMD_anti_lag input stage, with flip-time logging",
+    "functions": { "vkNegotiateLoaderLayerInterfaceVersion": "vkpace_NegotiateLoaderLayerInterfaceVersion" },
+    "disable_environment": { "VKPACE_DISABLE": "1" }
+  }
+}

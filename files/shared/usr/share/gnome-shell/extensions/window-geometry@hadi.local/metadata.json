@@ -1,0 +1,8 @@
+{
+  "uuid": "window-geometry@hadi.local",
+  "name": "Window Geometry",
+  "description": "Restores each window's position, size, workspace and maximize/fullscreen state across restarts with zero visible teleport. Unlike smart-auto-move, it identifies the window by wm_class at the initial xdg configure and writes the geometry into the MetaWindowConfig *before the client's first buffer is presented*, so the window is never painted at the wrong place for even one frame. Fixed-size windows (splash screens, fixed-size game windows) are remembered under their own key, separate from the app's resizable windows, so a splash can never claim the main window's slot. Browser Picture-in-Picture windows (matched by title) likewise get their own key; the first PiP spawns in the bottom-right corner of the work area, and a PiP resize snaps to 16:9 on release. Native-Wayland toplevels only.",
+  "shell-version": ["50", "51"],
+  "version": 1,
+  "settings-schema": null
+}

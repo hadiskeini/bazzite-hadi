@@ -1,0 +1,16 @@
+# Scyrox mouse battery daemon as a user unit (decision 8). Needs /dev/uhid 0660 root:input (99-pc.rules),
+# `uhid` in modules-load.d, and hidraw access for VID 3554. Built into the image (venv in /usr/lib/scyrox-tools).
+# hidraw isn't exclusive, but battery polling can swallow configurator replies: `systemctl --user stop scyroxd` while configuring.
+[Unit]
+Description=Scyrox battery daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/scyroxd
+Restart=on-failure
+RestartSec=10
+StateDirectory=scyroxd
+
+[Install]
+WantedBy=default.target

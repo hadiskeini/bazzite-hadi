@@ -1,0 +1,59 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# Preferences valid on any Bazzite machine.
+modules:
+  - type: files
+    files:
+      - source: shared
+        destination: /
+
+  - type: dnf
+    install:
+      packages:
+        - lsp-plugins-ladspa   # Boost EQ limiter; replaces portable/lsp-ladspa and the LADSPA_PATH drop-in
+    remove:
+      packages:
+        - input-remapper
+        - waydroid
+        - lutris
+        - webapp-manager
+        - ibus-mozc
+        - uld
+        - tailscale
+        - scx-scheds           # sched_ext must stay off (browser audio crackle)
+        - scx-tools
+        - gnome-shell-extension-user-theme
+        - steamdeck-backgrounds
+        - steamdeck-gnome-presets
+        - adw-gtk3-theme
+
+  - type: script
+    scripts:
+      - brave-origin.sh
+      - branding.sh
+
+  - type: copy
+    from: holdsuper
+    src: /out/holdsuper
+    dest: /usr/bin/
+  - type: copy
+    from: vkpace
+    src: /out/libvkpace.so
+    dest: /usr/lib64/vkpace/
+
+  - type: gnome-extensions
+    install:
+      - 307    # Dash to Dock
+      - 352    # Quick Close in Overview (middleclickclose)
+      - 3960   # Transparent Top Bar (Adjustable transparency)
+      - 6248   # Top Panel Notification Icons Revived
+      # Not yet: no GNOME 51 version on extensions.gnome.org. They stay user-installed (gnome-extensions.txt)
+      # until one is listed: Clipboard Indicator, PiP on top (4691), Quick Settings Audio Devices Hider (5964).
+
+  - type: gschema-overrides
+    include:
+      - zz1-hadi.gschema.override
+
+  - type: systemd
+    system:
+      masked:
+        - rpm-ostree-countme.timer
