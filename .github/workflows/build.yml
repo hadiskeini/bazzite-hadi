@@ -118,9 +118,9 @@ jobs:
           df -h "$work"
           docker run --rm -v "$work:/work" -e TMPDIR=/work/tmp -e REF="ostree-unverified-registry:$IMAGE@$DIGEST" \
             quay.io/fedora/fedora:45 bash -euo pipefail -c '
+              mkdir -p /work/tmp
               dnf -y -q install ostree rpm-ostree
               rpm -q ostree rpm-ostree
-              mkdir -p /work/tmp
               ostree --repo=/work/repo init --mode=bare-user
               ostree container image pull /work/repo "$REF"'
 
