@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Brave Origin beta launcher. Upstream Brave does NOT read ~/.config/brave-flags.conf, so the flags live here.
-# @BRAVE_DIR@ is replaced at build time with the RPM's install directory (recipes/shared.yml).
+# The install path in the exec line is filled in at build time (files/scripts/brave-origin.sh).
 #
 # exit_type shim: on reboot the session SIGKILLs Brave before it writes its clean-exit flag, so profile.exit_type stays
 # "Crashed", which triggers the "restore?" bubble AND blocks silent session restore. exit_type is not in protection.macs.

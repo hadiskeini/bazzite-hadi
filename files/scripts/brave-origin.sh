@@ -22,11 +22,16 @@ tmp="$(mktemp -d)"
 curl -fsSL -o "$tmp/$asset" "$base/$asset"
 curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256"
 [ "$(awk 'NR==1{print $1}' "$tmp/$asset.sha256")" = "$(sha256sum "$tmp/$asset" | awk '{print $1}')" ] || { echo "sha256 mismatch for $asset" >&2; exit 1; }
-# The rpm requires brave-keyring, which only Brave's own repo carries: add it for this install, then drop it.
-rpm --import https://brave-browser-rpm-release.s3.brave.com/brave-core.asc
+# Beta rpms are signed with Brave's pre-release key (brave-core-beta.asc), not the release key.
+# The rpm requires brave-keyring, which only Brave's own repo carries: add that repo for this install, then drop it.
+rpm --import https://brave-browser-rpm-beta.s3.brave.com/brave-core-beta.asc
 curl -fsSL -o /etc/yum.repos.d/brave-browser.repo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
+# dnf skips OpenPGP checks for a local rpm file, so check Brave's signature here; the sha256 only proves integrity.
+rpm -K "$tmp/$asset"
 dnf -y install brave-keyring "$tmp/$asset"
 rm -rf "$tmp"
+# The rpm's %post registers /usr/bin/brave-origin as an alternatives link; our wrapper already owns that path.
+alternatives --remove-all brave-origin 2>/dev/null || true
 
 dir="$(dirname "$(ls -d /opt/brave.com/*/brave | head -1)")"
 sed -i "s#@BRAVE_DIR@#$dir#" /usr/bin/brave-origin

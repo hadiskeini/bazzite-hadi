@@ -74,9 +74,9 @@ jobs:
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
-          # rpm-ostree's own chunking, as Bazzite does: files removed from the base are really gone, and an update
-          # downloads only the chunks that changed.
-          build_chunked_oci: true
+          # Rebuild the layers so files removed from the base are really gone, and updates download in smaller pieces.
+          # build_chunked_oci (Bazzite's method) panics in rpm-ostree 2026.2 chunking.rs on this image; retry it later.
+          rechunk: true
       - name: Remember these inputs
         if: github.event_name != 'pull_request'
         run: mkdir -p .built && echo "${{ needs.check.outputs.key }}" > .built/key
