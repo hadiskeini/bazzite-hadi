@@ -1,0 +1,22 @@
+name: keepalive
+# GitHub disables scheduled workflows in a public repo after 60 days without repository activity, so a stable
+# recipe would silently stop the daily builds. A monthly empty commit is activity. A push made with GITHUB_TOKEN
+# starts no other workflow, so this does not build an image.
+on:
+  schedule:
+    - cron: "0 3 1 * *"
+      timezone: "Europe/Berlin"
+  workflow_dispatch:
+jobs:
+  keepalive:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push an empty commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "Keep the scheduled builds enabled"
+          git push

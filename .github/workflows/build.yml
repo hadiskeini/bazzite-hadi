@@ -1,18 +1,65 @@
 name: bluebuild
 on:
   schedule:
-    - cron: "15 */6 * * *"   # several times a day; a later change: build only when the base digest changed
+    # Once a day, ready before the PC starts around 18:00. Not on the hour: GitHub delays schedules most there.
+    # The run builds only when an input changed (job "check").
+    - cron: "10 16 * * *"
+      timezone: "Europe/Berlin"
   push:
     paths-ignore:
       - "**.md"
   pull_request:
-  workflow_dispatch:
+  workflow_dispatch:          # a manual run always builds
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  check:
+    name: Check inputs
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      key: ${{ steps.fp.outputs.key }}
+    steps:
+      # Everything the image takes from outside this repo. The ISO week forces one build a week, which picks up
+      # Fedora updates of the packages the recipe adds.
+      - name: Fingerprint the inputs
+        id: fp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base=$(skopeo inspect --format '{{.Digest}}' docker://ghcr.io/ublue-os/bazzite-gnome:testing)
+          brave=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" 'https://api.github.com/repos/brave/brave-browser/releases?per_page=100' \
+            | jq -r '[.[].assets[].name | select(test("^brave-origin-beta-[0-9.]+-1\\.x86_64\\.rpm$"))][0]')
+          lact=$(curl -fsSL 'https://copr.fedorainfracloud.org/api_3/package/?ownername=ilyaz&projectname=LACT&packagename=lact&with_latest_succeeded_build=true' \
+            | jq -r '.builds.latest_succeeded.source_package.version // "unknown"')
+          ext=$(for pk in 307 352 3960 6248; do curl -fsSL "https://extensions.gnome.org/extension-info/?pk=$pk&shell_version=51" | jq -r .version; done | paste -sd, -)
+          week=$(date -u +%G-W%V)
+          echo "base=$base brave=$brave lact=$lact extensions=$ext week=$week recipe=$GITHUB_SHA"
+          key=$(printf '%s\n' "$base" "$brave" "$lact" "$ext" "$week" "$GITHUB_SHA" | sha256sum | cut -c1-32)
+          echo "key=inputs-$key" >> "$GITHUB_OUTPUT"
+      - name: Look for a build with the same inputs
+        id: seen
+        uses: actions/cache/restore@v4
+        with:
+          path: .built
+          key: ${{ steps.fp.outputs.key }}
+          lookup-only: true
+      - name: Decide
+        id: decide
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "${{ steps.seen.outputs.cache-hit }}" = true ]; then
+            echo "No input changed since the last build: skipping."
+            echo build=false >> "$GITHUB_OUTPUT"
+          else
+            echo build=true >> "$GITHUB_OUTPUT"
+          fi
+
   bluebuild:
     name: Build image
+    needs: check
+    if: needs.check.outputs.build == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -27,5 +74,15 @@ jobs:
           registry_token: ${{ github.token }}
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
-          # Rebuild the layers so files removed from the base are really gone, and updates download in smaller pieces.
-          rechunk: true
+          # rpm-ostree's own chunking, as Bazzite does: files removed from the base are really gone, and an update
+          # downloads only the chunks that changed.
+          build_chunked_oci: true
+      - name: Remember these inputs
+        if: github.event_name != 'pull_request'
+        run: mkdir -p .built && echo "${{ needs.check.outputs.key }}" > .built/key
+      - name: Save the fingerprint
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: .built
+          key: ${{ needs.check.outputs.key }}
