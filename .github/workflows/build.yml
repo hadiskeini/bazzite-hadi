@@ -41,7 +41,7 @@ jobs:
           echo "key=inputs-$key" >> "$GITHUB_OUTPUT"
       - name: Look for a build with the same inputs
         id: seen
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .built
           key: ${{ steps.fp.outputs.key }}
@@ -83,7 +83,7 @@ jobs:
         run: mkdir -p .built && echo "${{ needs.check.outputs.key }}" > .built/key
       - name: Save the fingerprint
         if: github.event_name != 'pull_request'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .built
           key: ${{ needs.check.outputs.key }}
