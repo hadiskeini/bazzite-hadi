@@ -75,8 +75,9 @@ jobs:
           pr_event_number: ${{ github.event.number }}
           maximize_build_space: true
           # Rebuild the layers so files removed from the base are really gone, and updates download in smaller pieces.
-          # build_chunked_oci (Bazzite's method) panics in rpm-ostree 2026.2 chunking.rs on this image; retry it later.
-          rechunk: true
+          # chunkah (coreos/chunkah) is the maintained chunker. hhd-dev rechunk is archived, and its images fail to
+          # import on ostree 2026.4 ("Corrupted file object"); build_chunked_oci panics in rpm-ostree 2026.2 (#2).
+          chunkah: true
       - name: Remember these inputs
         if: github.event_name != 'pull_request'
         run: mkdir -p .built && echo "${{ needs.check.outputs.key }}" > .built/key
