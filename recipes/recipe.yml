@@ -5,6 +5,9 @@ name: bazzite-hadi
 description: Bazzite GNOME with Fedora branding, trimmed, with the pc-bazzite system config built in
 base-image: ghcr.io/ublue-os/bazzite-gnome
 image-version: testing
+# Replaces the default tags: a build never moves :latest. The workflow moves it after the import test.
+alt-tags:
+  - staging
 
 stages:
   - name: holdsuper

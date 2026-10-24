@@ -10,6 +10,8 @@ on:
       - "**.md"
   pull_request:
   workflow_dispatch:          # a manual run always builds
+env:
+  IMAGE: ghcr.io/hadiskeini/bazzite-hadi
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
@@ -65,6 +67,8 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    outputs:
+      digest: ${{ steps.pushed.outputs.digest }}
     steps:
       - name: Build image
         uses: blue-build/github-action@v1.13
@@ -78,11 +82,79 @@ jobs:
           # chunkah (coreos/chunkah) is the maintained chunker. hhd-dev rechunk is archived, and its images fail to
           # import on ostree 2026.4 ("Corrupted file object"); build_chunked_oci panics in rpm-ostree 2026.2 (#2).
           chunkah: true
+      # The CLI tags <short sha>-staging-<major version of the base image> on every event.
+      - name: Find the pushed digest
+        id: pushed
+        run: |
+          set -euo pipefail
+          major=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.version"}}' docker://ghcr.io/ublue-os/bazzite-gnome:testing \
+            | grep -oE '[0-9]+' | head -n1)
+          tag="${GITHUB_SHA::7}-staging-$major"
+          digest="sha256:$(skopeo inspect --raw "docker://$IMAGE:$tag" | sha256sum | cut -d' ' -f1)"
+          echo "$IMAGE:$tag is $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  import-test:
+    name: Test the ostree import
+    needs: bluebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Free disk space
+        uses: hastd/free-disk-space@68572aeaadb7f76bd408246328e95926323402b5 # v0.1.2
+        with:
+          skip-if-available: "40G"
+      # Same pull as bootc switch on the PC, into a throwaway repo. It needs about 10 GB.
+      - name: Pull the image into an ostree repo
+        env:
+          DIGEST: ${{ needs.bluebuild.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mount=$({ df -k --output=avail,target / /mnt 2>/dev/null || true; } | tail -n +2 | sort -rn | head -n1 | awk '{print $2}')
+          work="${mount%/}/import-test"
+          sudo mkdir -p "$work" && sudo chown "$(id -u):$(id -g)" "$work"
+          df -h "$work"
+          docker run --rm -v "$work:/work" -e TMPDIR=/work/tmp -e REF="ostree-unverified-registry:$IMAGE@$DIGEST" \
+            quay.io/fedora/fedora:45 bash -euo pipefail -c '
+              mkdir -p /work/tmp
+              dnf -y -q install ostree rpm-ostree
+              rpm -q ostree rpm-ostree
+              ostree --repo=/work/repo init --mode=bare-user
+              ostree container image pull /work/repo "$REF"'
+
+  promote:
+    name: Move latest to the tested image
+    needs: [check, bluebuild, import-test]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Move latest and the date tag
+        env:
+          DIGEST: ${{ needs.bluebuild.outputs.digest }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cosign verify --key cosign.pub "$IMAGE@$DIGEST" > /dev/null
+          echo "$REGISTRY_TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Without --preserve-digests a changed manifest gets a new digest, and the signature no longer matches.
+          # The date tag is for a rollback to a known day: rpm-ostree rebase ...:<YYYYMMDD>.
+          for tag in latest "$(date -u +%Y%m%d)"; do
+            skopeo copy --all --preserve-digests "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$tag"
+            now="sha256:$(skopeo inspect --raw "docker://$IMAGE:$tag" | sha256sum | cut -d' ' -f1)"
+            echo "$IMAGE:$tag is $now"
+            [ "$now" = "$DIGEST" ]
+          done
+      # Only a promoted build counts as built: after a failed test, the next scheduled run builds again.
       - name: Remember these inputs
-        if: github.event_name != 'pull_request'
         run: mkdir -p .built && echo "${{ needs.check.outputs.key }}" > .built/key
       - name: Save the fingerprint
-        if: github.event_name != 'pull_request'
         uses: actions/cache/save@v6
         with:
           path: .built
