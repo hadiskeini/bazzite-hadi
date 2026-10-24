@@ -135,7 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - name: Move latest
+      - name: Move latest and the date tag
         env:
           DIGEST: ${{ needs.bluebuild.outputs.digest }}
           REGISTRY_TOKEN: ${{ github.token }}
@@ -144,10 +144,13 @@ jobs:
           cosign verify --key cosign.pub "$IMAGE@$DIGEST" > /dev/null
           echo "$REGISTRY_TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           # Without --preserve-digests a changed manifest gets a new digest, and the signature no longer matches.
-          skopeo copy --all --preserve-digests "docker://$IMAGE@$DIGEST" "docker://$IMAGE:latest"
-          now="sha256:$(skopeo inspect --raw "docker://$IMAGE:latest" | sha256sum | cut -d' ' -f1)"
-          echo "$IMAGE:latest is $now"
-          [ "$now" = "$DIGEST" ]
+          # The date tag is for a rollback to a known day: rpm-ostree rebase ...:<YYYYMMDD>.
+          for tag in latest "$(date -u +%Y%m%d)"; do
+            skopeo copy --all --preserve-digests "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$tag"
+            now="sha256:$(skopeo inspect --raw "docker://$IMAGE:$tag" | sha256sum | cut -d' ' -f1)"
+            echo "$IMAGE:$tag is $now"
+            [ "$now" = "$DIGEST" ]
+          done
       # Only a promoted build counts as built: after a failed test, the next scheduled run builds again.
       - name: Remember these inputs
         run: mkdir -p .built && echo "${{ needs.check.outputs.key }}" > .built/key
