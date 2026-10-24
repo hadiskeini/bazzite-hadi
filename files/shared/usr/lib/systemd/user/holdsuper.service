@@ -4,6 +4,8 @@
 [Unit]
 Description=holdsuper (mouse button tap/hold to Super)
 After=default.target
+# Enabled globally, so root (every sudo starts a user manager) and GDM would get a second copy.
+ConditionUser=!@system
 
 [Service]
 Type=simple
