@@ -38,7 +38,7 @@ stages:
       - type: script
         snippets:
           # Pinned commit: the repo has no tags. Bump it here to update.
-          - dnf -y install python3 git && python3 -m venv /usr/lib/scyrox-tools && /usr/lib/scyrox-tools/bin/pip install --no-cache-dir "git+https://github.com/hadiskeini/scyrox-tools@5f26ad42cf939c6cb5d31597732d2dde2ce4f16a"
+          - dnf -y install python3 git && python3 -m venv /usr/lib/scyrox-tools && /usr/lib/scyrox-tools/bin/pip install --no-cache-dir "git+https://github.com/hadiskeini/scyrox-tools@ae8d7e32513f0a09ba8347cd8fbe95493e57de91"
 
 modules:
   - from-file: shared.yml
