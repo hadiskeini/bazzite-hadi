@@ -4,8 +4,7 @@ name: keepalive
 # starts no other workflow, so this does not build an image.
 on:
   schedule:
-    - cron: "0 3 1 * *"
-      timezone: "Europe/Berlin"
+    - cron: "0 2 1 * *"
   workflow_dispatch:
 jobs:
   keepalive:

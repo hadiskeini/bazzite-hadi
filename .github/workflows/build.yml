@@ -2,9 +2,8 @@ name: bluebuild
 on:
   schedule:
     # Once a day, ready before the PC starts around 18:00. Not on the hour: GitHub delays schedules most there.
-    # The run builds only when an input changed (job "check").
-    - cron: "10 16 * * *"
-      timezone: "Europe/Berlin"
+    # The run builds only when an input changed (job "check"). Cron is UTC: GitHub ignores a "timezone" key.
+    - cron: "10 15 * * *"
   push:
     paths-ignore:
       - "**.md"
