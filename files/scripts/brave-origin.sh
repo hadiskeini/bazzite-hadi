@@ -33,7 +33,9 @@ rm -rf "$tmp"
 # The rpm's %post registers /usr/bin/brave-origin as an alternatives link; our wrapper already owns that path.
 alternatives --remove-all brave-origin 2>/dev/null || true
 
-dir="$(dirname "$(find /opt/brave.com -mindepth 2 -maxdepth 2 -name brave -type f | head -1)")"
+# /opt links to /usr/lib/opt during the build only (BlueBuild optfix): resolve it, so the wrapper does not need the runtime link.
+dir="$(dirname "$(readlink -f "$(find /opt/brave.com/ -mindepth 2 -maxdepth 2 -name brave -type f | head -1)")")"
+[ -x "$dir/brave" ] || { echo "brave binary not found under /opt/brave.com" >&2; exit 1; }
 sed -i "s#@BRAVE_DIR@#$dir#" /usr/bin/brave-origin
 # Our launcher (brave-origin.desktop, the ID mimeapps.list uses) replaces the rpm's own; icons under that name.
 find /usr/share/applications \( -name 'brave-origin*.desktop' -o -name 'com.brave.Origin*.desktop' \) ! -name brave-origin.desktop -delete
