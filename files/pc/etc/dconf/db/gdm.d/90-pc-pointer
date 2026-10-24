@@ -1,0 +1,3 @@
+# GDM greeter pointer: flat acceleration, as in the session. dconf-update.service compiles it at boot.
+[org/gnome/desktop/peripherals/mouse]
+accel-profile='flat'
