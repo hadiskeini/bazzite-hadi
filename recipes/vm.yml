@@ -1,8 +1,8 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
-# vm-silverblue: Fedora Silverblue on aarch64 in OmacVM.app, with the Umbriel session, the Mac camera module and the
-# VM's system config built in. Built natively on an arm64 runner; shared.yml and pc.yml are Bazzite-only.
+# vm-silverblue: Fedora Silverblue on aarch64 in OmacVM.app, with the Mac camera module and the VM's system config
+# built in. Built natively on an arm64 runner; shared.yml and pc.yml are Bazzite-only.
 name: silverblue-vm
-description: Fedora Silverblue for vm-silverblue (aarch64) with the Umbriel session and the VM's system config built in
+description: Fedora Silverblue for vm-silverblue (aarch64) with the Mac camera module and the VM's system config built in
 base-image: quay.io/fedora/fedora-silverblue
 image-version: 45
 # Replaces the default tags: a build never moves :latest. The workflow moves it after the import test.
@@ -10,14 +10,6 @@ alt-tags:
   - staging
 
 stages:
-  # Same stage as in recipe.yml: Umbriel has no release yet, so it is built from main.
-  - name: umbriel
-    from: registry.fedoraproject.org/fedora:45
-    modules:
-      - type: script
-        scripts:
-          - build-umbriel.sh
-
   - name: v4l2loopback
     from: quay.io/fedora/fedora-silverblue:45
     modules:
@@ -27,7 +19,6 @@ stages:
 
 modules:
   - from-file: vm-host.yml
-  - from-file: umbriel.yml
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:

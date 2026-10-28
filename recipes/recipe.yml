@@ -40,19 +40,9 @@ stages:
           # Pinned commit: the repo has no tags. Bump it here to update.
           - dnf -y install python3 git && python3 -m venv /usr/lib/scyrox-tools && /usr/lib/scyrox-tools/bin/pip install --no-cache-dir "git+https://github.com/hadiskeini/scyrox-tools@ae8d7e32513f0a09ba8347cd8fbe95493e57de91"
 
-  # Second login session, independent of GNOME. Built from main: Umbriel has no release yet.
-  # Remove this stage and "umbriel.yml" below to drop it again.
-  - name: umbriel
-    from: registry.fedoraproject.org/fedora:45
-    modules:
-      - type: script
-        scripts:
-          - build-umbriel.sh
-
 modules:
   - from-file: shared.yml
   - from-file: pc.yml
-  - from-file: umbriel.yml
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:
