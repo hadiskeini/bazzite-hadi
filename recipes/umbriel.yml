@@ -6,15 +6,12 @@ modules:
     from: umbriel
     src: /out/usr/
     dest: /usr/
+  # rpm-deps.txt lists only linked libraries; Umbriel starts xwayland-satellite as a program for X11 apps.
   - type: script
     snippets:
-      - dnf -y install $(cat /usr/share/umbriel-session/rpm-deps.txt) && ! ldd /usr/bin/umbriel /usr/bin/noctalia /usr/libexec/xdg-desktop-portal-umbriel | grep "not found"
+      - dnf -y install xwayland-satellite $(cat /usr/share/umbriel-session/rpm-deps.txt) && ! ldd /usr/bin/umbriel /usr/bin/noctalia /usr/libexec/xdg-desktop-portal-umbriel | grep "not found"
 
   - type: files
     files:
       - source: umbriel
         destination: /
-  - type: systemd
-    user:
-      enabled:
-        - holdsuper-umbriel.service   # WantedBy=umbriel-session.target: the Umbriel side of hold-super@hadi.local

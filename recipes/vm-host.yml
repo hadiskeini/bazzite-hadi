@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# Facts about vm-silverblue: OmacVM.app on a MacBook, GPU through virgl (OpenGL) and Venus (Vulkan), the Mac's camera
+# through v4l2loopback. Secrets stay out: /etc/omacvm (the Touch ID key) is written on the VM by silverblue-omacvm.
+modules:
+  - type: files
+    files:
+      - source: vm
+        destination: /
+
+  - type: script
+    scripts:
+      - vm-mesa.sh
+
+  - type: dnf
+    install:
+      packages:
+        - python3-evdev        # OmacVM's gestures and side-button daemons (silverblue-omacvm)
+
+  - type: copy
+    from: v4l2loopback
+    src: /out/
+    dest: /tmp/v4l2loopback/
+  - type: script
+    snippets:
+      - dnf -y install /tmp/v4l2loopback/*.rpm && rm -rf /tmp/v4l2loopback

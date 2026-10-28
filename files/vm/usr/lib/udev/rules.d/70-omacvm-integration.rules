@@ -1,0 +1,4 @@
+# OmacVM Integration: the logged-in user opens these ports.
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.omacvm.clipboard", TAG+="uaccess"
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.omacvm.battery", TAG+="uaccess"
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.omacvm.display", TAG+="uaccess"

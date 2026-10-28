@@ -1,0 +1,7 @@
+# OmacVM: from try-omarchy (94-omarchy-native-camera.rules), MIT, (c) Try Omarchy contributors;
+# uaccess added. The Mac's camera for the logged-in user (uaccess, before 73-seat-late.rules)
+# and the video group; OmacVM.app's virtio port for omacvm-camera.
+KERNEL=="video42", SUBSYSTEM=="video4linux", GROUP="video", MODE="0660", TAG+="uaccess"
+# omacvm-usbcam: a Mac USB webcam (mac/webcam-stream.py).
+KERNEL=="video43", SUBSYSTEM=="video4linux", GROUP="video", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.omacvm.camera", GROUP="video", MODE="0660", TAG+="uaccess"
