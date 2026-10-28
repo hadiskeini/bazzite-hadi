@@ -6,7 +6,10 @@ on:
     # (job "check"). Cron is UTC: GitHub ignores a "timezone" key.
     - cron: "37 11 * * *"
     - cron: "37 13 * * *"
+  # Branches build through their pull request only; a push to a branch with an open PR would otherwise start a
+  # second, identical run (its concurrency group is the branch, not the PR).
   push:
+    branches: [main]
     paths-ignore:
       - "**.md"
   pull_request:
