@@ -61,3 +61,4 @@ modules:
     user:
       enabled:
         - holdsuper.service       # waits for hold-super@hadi.local; holds no device without it
+        - holdsuper-umbriel.service   # WantedBy=umbriel-session.target: the Umbriel side of hold-super@hadi.local
