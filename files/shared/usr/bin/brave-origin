@@ -25,7 +25,12 @@ if [ "${lock%-*}" != "$HOSTNAME" ] || [ "$(readlink "/proc/$pid/exe" 2>/dev/null
   done
 fi
 
+# Brave picks the keyring from the desktop name. It does not know "umbriel" and falls back to a fixed key,
+# which cannot read the passwords and sync key stored under GNOME.
+extra=()
+[ "$XDG_CURRENT_DESKTOP" = umbriel ] && extra+=(--password-store=gnome-libsecret)
+
 # HEVC/H.265 via VA-API on radeonsi (iOS screen recordings). VaapiVideoDecodeLinuxGL does not work for this.
 exec "@BRAVE_DIR@/brave" \
   --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL \
-  "$@"
+  "${extra[@]}" "$@"

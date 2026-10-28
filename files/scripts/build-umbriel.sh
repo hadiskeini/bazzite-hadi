@@ -36,9 +36,10 @@ meson setup build --buildtype=release --prefix=/usr -Dtests=disabled
 meson install -C build --destdir /out
 mkdir -p /out/usr/share/fish/vendor_completions.d
 ./build/noctalia completions fish > /out/usr/share/fish/vendor_completions.d/noctalia.fish
-# Keep Noctalia out of the GNOME app grid and the image "Open With" list.
+# Keep Noctalia out of the GNOME app grid and the image "Open With" list. The session sets
+# XDG_CURRENT_DESKTOP=umbriel (lowercase) although umbriel.desktop says Umbriel; the match is case-sensitive.
 for f in /out/usr/share/applications/dev.noctalia.Noctalia*.desktop; do
-  sed -i '/^\[Desktop Entry\]/a OnlyShowIn=Umbriel;' "$f"
+  sed -i '/^\[Desktop Entry\]/a OnlyShowIn=Umbriel;umbriel;' "$f"
 done
 
 # Sonames, not package names: Bazzite replaces some Fedora library packages (terra-wireplumber-libs).
