@@ -6,7 +6,9 @@ set -euo pipefail
 
 kernel=$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | tail -n1)
 dnf -y install "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
-dnf -y install "kernel-devel-$kernel" akmod-v4l2loopback
+dnf -y install "kernel-devel-$kernel" akmods
+# Its %post builds for the running kernel, which in CI is the runner's; the build below names the image's kernel.
+dnf -y install --setopt=tsflags=noscripts akmod-v4l2loopback
 akmods --force --kernels "$kernel" --kmod v4l2loopback
 modinfo -k "$kernel" v4l2loopback > /dev/null || { cat /var/cache/akmods/v4l2loopback/*.failed.log; exit 1; }
 
