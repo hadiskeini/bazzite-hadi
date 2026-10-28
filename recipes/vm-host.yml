@@ -15,6 +15,7 @@ modules:
     install:
       packages:
         - python3-evdev        # OmacVM's gestures and side-button daemons (silverblue-omacvm)
+        - gcc                  # the C linker for cargo (sys in ~/home); came with akmods before the prebuilt module
 
   - type: copy
     from: v4l2loopback
