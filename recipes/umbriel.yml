@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# Umbriel compositor + Noctalia shell as a second GDM session. Nothing here runs in the GNOME session:
+# the portal is used only when XDG_CURRENT_DESKTOP=Umbriel, and the user units start only from start-umbriel.
+modules:
+  - type: copy
+    from: umbriel
+    src: /out/usr/
+    dest: /usr/
+  - type: script
+    snippets:
+      - dnf -y install $(cat /usr/share/umbriel-session/rpm-deps.txt) && ! ldd /usr/bin/umbriel /usr/bin/noctalia /usr/libexec/xdg-desktop-portal-umbriel | grep "not found"

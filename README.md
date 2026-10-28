@@ -6,6 +6,7 @@ config built in. Built with [BlueBuild](https://blue-build.org).
 - `recipes/recipe.yml` — base image, build stages, module order
 - `recipes/shared.yml` — preferences valid on any Bazzite machine
 - `recipes/pc.yml` — facts about pc-bazzite (hardware, kernel arguments, masks)
+- `recipes/umbriel.yml` — second login session: Umbriel compositor + Noctalia shell, built from main in stage `umbriel`
 - `files/` — files copied into the image, sources for the build stages, build scripts
 
 Home config, Flatpaks and Homebrew stay in `bazzite-system` and `dotfiles`.

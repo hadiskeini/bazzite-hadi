@@ -38,9 +38,10 @@ jobs:
           lact=$(curl -fsSL 'https://copr.fedorainfracloud.org/api_3/package/?ownername=ilyaz&projectname=LACT&packagename=lact&with_latest_succeeded_build=true' \
             | jq -r '.builds.latest_succeeded.source_package.version // "unknown"')
           ext=$(for pk in 307 352 3960 6248; do curl -fsSL "https://extensions.gnome.org/extension-info/?pk=$pk&shell_version=51" | jq -r .version; done | paste -sd, -)
+          umbriel=$(for r in umbriel xdg-desktop-portal-umbriel noctalia; do git ls-remote "https://github.com/noctalia-dev/$r" HEAD | cut -c1-12; done | paste -sd, -)
           week=$(date -u +%G-W%V)
-          echo "base=$base brave=$brave lact=$lact extensions=$ext week=$week recipe=$GITHUB_SHA"
-          key=$(printf '%s\n' "$base" "$brave" "$lact" "$ext" "$week" "$GITHUB_SHA" | sha256sum | cut -c1-32)
+          echo "base=$base brave=$brave lact=$lact extensions=$ext umbriel=$umbriel week=$week recipe=$GITHUB_SHA"
+          key=$(printf '%s\n' "$base" "$brave" "$lact" "$ext" "$umbriel" "$week" "$GITHUB_SHA" | sha256sum | cut -c1-32)
           echo "key=inputs-$key" >> "$GITHUB_OUTPUT"
       - name: Look for a build with the same inputs
         id: seen
