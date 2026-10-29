@@ -27,6 +27,12 @@ modules:
       packages:
         - ghostty
 
+  # Ghostty draws only with OpenGL 4.3. virgl gives 4.1 without storage buffers, Zink only 2.1, so llvmpipe.
+  # Every launcher (desktop file, D-Bus, systemd unit) runs /usr/bin/ghostty: the wrapper covers them all.
+  - type: script
+    snippets:
+      - mv /usr/bin/ghostty /usr/libexec/ghostty && printf '#!/bin/sh\nLIBGL_ALWAYS_SOFTWARE=1 exec /usr/libexec/ghostty "$@"\n' > /usr/bin/ghostty && chmod 755 /usr/bin/ghostty
+
   - type: copy
     from: v4l2loopback
     src: /out/
