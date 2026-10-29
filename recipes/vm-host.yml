@@ -17,6 +17,16 @@ modules:
         - python3-evdev        # OmacVM's gestures and side-button daemons (silverblue-omacvm)
         - gcc                  # the C linker for cargo (sys in ~/home); came with akmods before the prebuilt module
 
+  # Fedora has no Ghostty. Terra is on only for this module: its dependencies (gtk4-layer-shell) come from Fedora.
+  - type: dnf
+    repos:
+      files:
+        - https://github.com/terrapkg/subatomic-repos/raw/main/terra.repo
+      cleanup: true
+    install:
+      packages:
+        - ghostty
+
   - type: copy
     from: v4l2loopback
     src: /out/

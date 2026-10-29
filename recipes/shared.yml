@@ -10,6 +10,7 @@ modules:
     install:
       packages:
         - lsp-plugins-ladspa   # Boost EQ limiter; replaces portable/lsp-ladspa and the LADSPA_PATH drop-in
+        - ghostty              # from Terra, which Bazzite keeps enabled
     remove:
       packages:
         - input-remapper
