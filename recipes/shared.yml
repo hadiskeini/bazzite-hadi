@@ -10,7 +10,6 @@ modules:
     install:
       packages:
         - lsp-plugins-ladspa   # Boost EQ limiter; replaces portable/lsp-ladspa and the LADSPA_PATH drop-in
-        - ghostty              # from Terra, which Bazzite keeps enabled
     remove:
       packages:
         - input-remapper
@@ -26,6 +25,12 @@ modules:
         - steamdeck-backgrounds
         - steamdeck-gnome-presets
         - adw-gtk3-theme
+
+  # Bazzite ships Terra turned off at priority 1. Turn it on for Ghostty only, so its dependencies come from Fedora.
+  # Bazzite skips weak dependencies: shell-integration is named on purpose.
+  - type: script
+    snippets:
+      - dnf -y install --enablerepo=terra --setopt=terra.includepkgs='ghostty*' ghostty ghostty-shell-integration
 
   - type: script
     scripts:
