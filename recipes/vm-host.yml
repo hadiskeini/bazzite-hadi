@@ -24,3 +24,5 @@ modules:
   - type: script
     snippets:
       - dnf -y install /tmp/v4l2loopback/*.rpm && rm -rf /tmp/v4l2loopback
+      # The package's options ("OBS Virtual Camera", one device) would replace those of 90-omacvm-camera.conf.
+      - rm /usr/lib/modprobe.d/98-v4l2loopback.conf
