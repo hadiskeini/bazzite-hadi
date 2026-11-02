@@ -1,14 +1,14 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
 # niri next to GNOME, with Dux Shell (formerly DankMaterialShell); in both images.
-# niri-git: daily builds of niri's main branch by its author. Dux Shell keeps its old package name, dms.
+# niri, Dux Shell and Quickshell are all git builds of their main branches. Dux Shell keeps its old package name, dms.
 # The COPRs are on only for this module; every image build takes their newest packages.
 modules:
   - type: dnf
     repos:
       copr:
         - yalter/niri-git
-        - avengemedia/dms
-        - avengemedia/danklinux   # quickshell for Dux Shell
+        - avengemedia/dms-git
+        - avengemedia/danklinux   # quickshell-git for Dux Shell
       cleanup: true
     install:
       packages:
@@ -16,6 +16,7 @@ modules:
         - xwayland-satellite      # X11 apps under niri
         - fuzzel                  # app launcher on Super+D
         - dms
+        - quickshell-git          # dms accepts the release quickshell too; without this line dnf can pick it
         # Picks the terminal from ~/.config/xdg-terminals.list (Ghostty) for GLib, GNOME and Dux Shell; without it
         # GLib falls back to Ptyxis.
         - xdg-terminal-exec
