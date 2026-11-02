@@ -12,7 +12,15 @@ modules:
       cleanup: true
     install:
       packages:
-        - niri
+        # Fedora's release niri (26.04) has the higher version number; only this repo gives the git build.
+        - repo: copr:copr.fedorainfracloud.org:yalter:niri-git
+          packages:
+            - niri
         - xwayland-satellite      # X11 apps under niri
         - fuzzel                  # app launcher on Super+D
         - dms
+
+  # Dux Shell starts with niri only, not with GNOME (its own unit is WantedBy graphical-session.target).
+  - type: script
+    snippets:
+      - mkdir -p /usr/lib/systemd/user/niri.service.wants && ln -s ../dms.service /usr/lib/systemd/user/niri.service.wants/dms.service
