@@ -1,0 +1,119 @@
+#!/usr/bin/python3
+"""omacvm-mac-levels: the Mac's volume and display brightness on the VM's own controls, both ways.
+
+  - Volume: the VM's "Mac" output (90-omacvm-mac-output.conf) does not apply its volume and mute; they are
+    kept equal to the Mac's.
+  - Brightness: the backlight "omacvm" (module omacvm_backlight, 0-100) is kept equal to the Mac's display
+    brightness. Written through logind, as the session's user may; read by polling (sysfs, no events).
+The Mac side is OmacVM Bridge: its "audio" ({"output": {"volume": 0-1, "muted"}}) and "display"
+({"brightness": 0-1}) events, and `omacvm-bridge volume|mute|brightness` to set. A change that only repeats
+the value the other side has is not sent back, so the two sides never chase each other.
+"""
+import json
+import pathlib
+import subprocess
+import threading
+import time
+
+SINK = "omacvm_mac_output"
+BACKLIGHT = pathlib.Path("/sys/class/backlight/omacvm/brightness")
+lock = threading.Lock()
+mac = {"volume": None, "muted": None, "brightness": None}   # what the Mac has, as last seen or set
+
+
+def log(message):
+    print(f"omacvm-mac-levels: {message}", flush=True)
+
+
+def run(*args):
+    return subprocess.run(args, capture_output=True, text=True, timeout=10)
+
+
+def sink_state():
+    try:
+        vol, mute = run("pactl", "get-sink-volume", SINK).stdout, run("pactl", "get-sink-mute", SINK).stdout
+    except subprocess.TimeoutExpired:
+        return None
+    percents = [int(w.rstrip("%")) for w in vol.split() if w.endswith("%")]
+    if not percents:
+        return None
+    return {"volume": round(sum(percents) / len(percents)), "muted": "yes" in mute}
+
+
+def backlight():
+    try:
+        return int(BACKLIGHT.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def set_backlight(level):
+    run("busctl", "call", "org.freedesktop.login1", "/org/freedesktop/login1/session/auto",
+        "org.freedesktop.login1.Session", "SetBrightness", "ssu", "backlight", "omacvm", str(level))
+
+
+def from_mac():
+    while True:
+        proc = subprocess.Popen(["omacvm-bridge", "events"], stdout=subprocess.PIPE, text=True)
+        for line in proc.stdout:
+            if not line.startswith("data: "):
+                continue
+            try:
+                event = json.loads(line[6:])
+            except ValueError:
+                continue
+            out = event.get("output")
+            with lock:
+                if isinstance(out, dict) and isinstance(out.get("volume"), (int, float)):
+                    volume, muted = round(out["volume"] * 100), out.get("muted") is True
+                    mac.update(volume=volume, muted=muted)
+                    state = sink_state()
+                    if state and state["volume"] != volume:
+                        run("pactl", "set-sink-volume", SINK, f"{volume}%")
+                    if state and state["muted"] != muted:
+                        run("pactl", "set-sink-mute", SINK, "1" if muted else "0")
+                elif isinstance(event.get("brightness"), (int, float)):
+                    level = round(event["brightness"] * 100)
+                    mac["brightness"] = level
+                    if backlight() not in (None, level):
+                        set_backlight(level)
+        proc.wait()
+        log("the Bridge's event stream ended; again in 3 s")
+        time.sleep(3)
+
+
+def volume_to_mac():
+    while True:
+        proc = subprocess.Popen(["pactl", "subscribe"], stdout=subprocess.PIPE, text=True)
+        for line in proc.stdout:
+            if "on sink #" not in line or "'change'" not in line:
+                continue
+            with lock:
+                state = sink_state()
+                if not state or mac["volume"] is None:
+                    continue
+                if state["volume"] != mac["volume"]:
+                    run("omacvm-bridge", "volume", str(state["volume"]))
+                    mac["volume"] = state["volume"]
+                if state["muted"] != mac["muted"]:
+                    run("omacvm-bridge", "mute", "on" if state["muted"] else "off")
+                    mac["muted"] = state["muted"]
+        proc.wait()
+        log("pactl subscribe ended; again in 3 s")
+        time.sleep(3)
+
+
+def brightness_to_mac():
+    while True:
+        time.sleep(0.25)
+        level = backlight()
+        with lock:
+            if level is None or mac["brightness"] is None or level == mac["brightness"]:
+                continue
+            run("omacvm-bridge", "brightness", str(level))
+            mac["brightness"] = level
+
+
+threading.Thread(target=from_mac, daemon=True).start()
+threading.Thread(target=brightness_to_mac, daemon=True).start()
+volume_to_mac()

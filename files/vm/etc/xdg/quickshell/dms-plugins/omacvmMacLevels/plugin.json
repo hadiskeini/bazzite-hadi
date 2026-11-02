@@ -1,15 +1,12 @@
 {
     "id": "omacvmMacLevels",
-    "name": "Mac volume and brightness",
-    "description": "The Mac's volume, brightness and keyboard light through OmacVM Bridge: Dux Shell's own level popup when they change (the media keys while the VM is in front), and a Control Center tile with the Mac's volume and brightness sliders.",
-    "version": "1.1.0",
+    "name": "Mac keyboard light",
+    "description": "Shows the Mac's keyboard light in Dux Shell's own level popup when it changes through OmacVM Bridge (Shift + the brightness keys while the VM is in front). The Mac's volume and display brightness use Dux Shell's own controls (omacvm-mac-levels).",
+    "version": "1.2.0",
     "author": "bazzite-hadi",
-    "type": "composite",
-    "capabilities": ["daemon", "control-center"],
-    "icon": "laptop_mac",
-    "components": {
-        "daemon": "./MacLevels.qml",
-        "widget": "./MacTile.qml"
-    },
+    "type": "daemon",
+    "capabilities": ["osd"],
+    "component": "./MacLevels.qml",
+    "icon": "keyboard",
     "permissions": []
 }

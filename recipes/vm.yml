@@ -26,16 +26,18 @@ stages:
       - type: script
         scripts:
           - build-omacvm-gpu.sh
-  - name: omacvm-battery
+  - name: omacvm-modules
     from: quay.io/fedora/fedora-silverblue:45
     modules:
       - type: files
         files:
           - source: src/omacvm-battery
-            destination: /src
+            destination: /src/omacvm-battery
+          - source: src/omacvm-backlight
+            destination: /src/omacvm-backlight
       - type: script
         scripts:
-          - build-omacvm-battery.sh
+          - build-omacvm-modules.sh
 
 modules:
   - from-file: vm-host.yml

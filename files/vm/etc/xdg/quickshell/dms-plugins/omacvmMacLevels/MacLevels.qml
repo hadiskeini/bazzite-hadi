@@ -5,8 +5,8 @@ import qs.Common
 import qs.Modules.OSD
 import qs.Modules.Plugins
 
-// The Bridge's "osd" events ({"type": "osd", "kind", "value", "muted", "source"}) come from `omacvm-bridge events`, which reads the
-// session's omacvm-bridge-events socket. The VM's own volume and brightness stay with Dux Shell's built-in popups.
+// The Bridge's "osd" events ({"type": "osd", "kind", "value", "muted", "source"}) come from
+// `omacvm-bridge events`, which reads the session's omacvm-bridge-events socket.
 PluginComponent {
     id: root
 
@@ -33,9 +33,10 @@ PluginComponent {
         }
         if (e.type !== "osd" || (e.source !== "keys" && e.source !== "api"))
             return;
-        // Volume has Dux Shell's own popup: the "Mac" output follows the Mac (omacvm-mac-volume).
+        // Volume and brightness have Dux Shell's own popups: the "Mac" output and the "omacvm" backlight follow
+        // the Mac (omacvm-mac-levels). Only the keyboard light has nothing of the VM's own.
         const kind = e.kind;
-        if (!["brightness", "keyboard"].includes(kind))
+        if (kind !== "keyboard")
             return;
         root.kind = kind;
         root.level = Math.round(e.value ?? 0);

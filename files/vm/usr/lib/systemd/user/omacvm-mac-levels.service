@@ -1,12 +1,12 @@
 [Unit]
-Description=OmacVM: the "Mac" output has the Mac's volume and mute (both ways, through OmacVM Bridge)
+Description=OmacVM: the Mac's volume and display brightness on the VM's own controls (through OmacVM Bridge)
 PartOf=graphical-session.target
 After=graphical-session.target pipewire-pulse.service
 ConditionPathExists=%h/.config/omacvm-bridge/token
 StartLimitIntervalSec=0
 
 [Service]
-ExecStart=/usr/libexec/omacvm-mac-volume
+ExecStart=/usr/libexec/omacvm-mac-levels
 Restart=on-failure
 RestartSec=3
 

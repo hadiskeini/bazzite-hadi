@@ -53,15 +53,16 @@ modules:
     scripts:
       - install-omacvm-gpu.sh
 
-  # The Mac's battery as a real one (BAT0, ADP0): GNOME's and Dux Shell's own indicators show it. The module comes
-  # from the stage omacvm-battery (files/src/omacvm-battery), the agent and its unit from files/vm.
+  # The Mac's battery as a real one (BAT0, ADP0) and its display brightness as the backlight "omacvm": the
+  # desktops' own indicators and sliders show them. The modules come from the stage omacvm-modules
+  # (files/src/omacvm-battery, files/src/omacvm-backlight), the agents and their units from files/vm.
   - type: copy
-    from: omacvm-battery
+    from: omacvm-modules
     src: /out/
-    dest: /tmp/omacvm-battery/
+    dest: /tmp/omacvm-modules/
   - type: script
     scripts:
-      - install-omacvm-battery.sh
+      - install-omacvm-modules.sh
 
   - type: systemd
     system:
@@ -71,4 +72,4 @@ modules:
       enabled:
         - omacvm-clipboard.service   # niri; GNOME has the omacvm-integration extension
         - omacvm-bridge-events.socket   # OmacVM Bridge on the Mac: the Mac's volume and brightness popups
-        - omacvm-mac-volume.service     # the "Mac" output (90-omacvm-mac-output.conf) follows the Mac's volume
+        - omacvm-mac-levels.service     # the "Mac" output and the "omacvm" backlight follow the Mac
