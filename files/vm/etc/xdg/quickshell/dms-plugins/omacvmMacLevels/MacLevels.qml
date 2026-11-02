@@ -33,8 +33,9 @@ PluginComponent {
         }
         if (e.type !== "osd" || (e.source !== "keys" && e.source !== "api"))
             return;
-        const kind = e.kind === "mute" ? "volume" : e.kind;
-        if (!["volume", "brightness", "keyboard"].includes(kind))
+        // Volume has Dux Shell's own popup: the "Mac" output follows the Mac (omacvm-mac-volume).
+        const kind = e.kind;
+        if (!["brightness", "keyboard"].includes(kind))
             return;
         root.kind = kind;
         root.level = Math.round(e.value ?? 0);
