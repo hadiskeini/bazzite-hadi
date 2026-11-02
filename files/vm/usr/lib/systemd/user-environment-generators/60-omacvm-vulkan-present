@@ -1,0 +1,23 @@
+#!/bin/sh
+# OmacVM.app: how Vulkan apps (Venus) show their windows. A systemd user
+# environment generator (installed by install.sh), so it runs when the
+# desktop session starts.
+# An app with virgl-set-type-without-egl.patch shows a Venus image that
+# Hyprland imports as a dma-buf (on the GPU, Mesa's normal WSI) and says so at
+# start (OEM string omacvm.vkwindows=1 -> /run/omacvm/host.env, omacvm-app-host),
+# with MoltenVK (macOS 15) and KosmicKrisp (macOS 26 and newer).
+# An older app ended Hyprland's GPU context on that import (black desktop for
+# good), so without the flag Vulkan apps present through a CPU copy (Mesa's
+# software WSI).
+if ! grep -qx 'OMACVM_VKWINDOWS=1' /run/omacvm/host.env 2>/dev/null; then
+  echo MESA_VK_WSI_DEBUG=sw
+  exit 0
+fi
+# Vulkan windows that wait for the display (FIFO, the default) ran at 45-50
+# frames a second on a 60 Hz display, OpenGL ones at 60. Mesa gives each such
+# frame a target time (Wayland commit timing: the last frame's presentation
+# plus one refresh) and Hyprland holds it until then; the VM's frame clock runs
+# a few ms late, so a frame often waited one refresh more. Without commit
+# timing (nowlts) the FIFO barrier alone paces them: 60. A value the user set
+# in their own environment.d wins.
+[ -n "${MESA_VK_WSI_DEBUG:-}" ] || echo MESA_VK_WSI_DEBUG=nowlts

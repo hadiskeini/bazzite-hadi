@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Build stage "omacvm-gpu" (silverblue-vm): OmacVM's GPU parts from /src (files/src/omacvm-gpu) for the base image's
+# kernel and Mesa, into /out. The stage runs on the same base as the image, so `rpm -q kernel` is the kernel that boots.
+#   /out/virtio-gpu.ko         the virtio-gpu driver with OmacVM's patches; missing when they do not fit or build
+#   /out/omacvm_drv_video.so   VA-API shim in front of Mesa's virtio_gpu driver
+#   /out/libEGL_omacvm.so.0    glvnd EGL vendor library in front of Mesa's
+# A driver that does not fit a new kernel leaves the image on the stock driver, not without a build: the log says why.
+set -euo pipefail
+
+kernel=$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | tail -n1)
+version=${kernel%%-*}
+[[ $version == *.*.0 ]] && version=${version%.0}   # tag v7.2, not v7.2.0
+dnf -y install "kernel-devel-$kernel" gcc make patch kmod elfutils-libelf-devel libva-devel libglvnd-devel
+mkdir -p /out
+
+# The shims. Mesa's VA driver is in /usr/lib64/dri on Fedora, not in Arch's /usr/lib/dri.
+sed 's|"/usr/lib/dri/virtio_gpu_drv_video.so"|"/usr/lib64/dri/virtio_gpu_drv_video.so"|' /src/omacvm_drv_video.c > /tmp/omacvm_drv_video.c
+grep -q '"/usr/lib64/dri/virtio_gpu_drv_video.so"' /tmp/omacvm_drv_video.c
+gcc -shared -fPIC -O2 -o /out/omacvm_drv_video.so /tmp/omacvm_drv_video.c -ldl
+gcc -shared -fPIC -O2 -fvisibility=hidden -Wl,-soname,libEGL_omacvm.so.0 -o /out/libEGL_omacvm.so.0 /src/omacvm_egl.c -ldl
+
+# The driver: the stable release's sources of drivers/gpu/drm/virtio, OmacVM's patches on them, built out of tree.
+work=/tmp/virtio-gpu
+src=$work/drivers/gpu/drm/virtio
+base=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/gpu/drm/virtio
+mkdir -p "$src"
+for f in Makefile virtgpu_debugfs.c virtgpu_display.c virtgpu_drv.c virtgpu_drv.h virtgpu_fence.c virtgpu_gem.c \
+         virtgpu_ioctl.c virtgpu_kms.c virtgpu_object.c virtgpu_plane.c virtgpu_prime.c virtgpu_submit.c \
+         virtgpu_trace.h virtgpu_trace_points.c virtgpu_vq.c virtgpu_vram.c; do
+  curl --fail --silent --show-error --location --retry 3 -o "$src/$f" "$base/$f?h=v$version"
+done
+# No fuzz: a hunk must fit exactly, so none lands in the wrong place of a newer kernel.
+fits() { patch --dry-run -s -d "$work" -p1 -f -F 0 -i "/src/$1" > /dev/null; }
+apply() { patch -s -d "$work" -p1 -f -F 0 -i "/src/$1"; }
+if ! fits linux-virtio-gpu-deep-color.patch; then
+  echo "omacvm-gpu: OmacVM's patches do not fit Linux $version: the image keeps the stock virtio-gpu driver"; exit 0
+fi
+apply linux-virtio-gpu-deep-color.patch    # the base the other patches apply on; deep_color stays off
+if ! fits linux-virtio-gpu-cursor-plane.patch; then
+  echo "omacvm-gpu: the cursor-plane patch does not fit Linux $version: the image keeps the stock virtio-gpu driver"; exit 0
+fi
+apply linux-virtio-gpu-cursor-plane.patch
+# Linux 7.4 has the damage fix itself; the patch replaces the line older kernels have.
+if grep -q 'new_plane_state->ignore_damage_clips = true;' "$src/virtgpu_plane.c"; then
+  if fits linux-virtio-gpu-damage-clips.patch; then apply linux-virtio-gpu-damage-clips.patch
+  else echo "omacvm-gpu: the damage fix does not fit Linux $version: left out"; fi
+fi
+if fits linux-virtio-gpu-hdr-metadata.patch; then apply linux-virtio-gpu-hdr-metadata.patch
+else echo "omacvm-gpu: the HDR metadata patch does not fit Linux $version: left out"; fi
+# Out of tree, the trace header sits next to the sources.
+sed -i 's|^#define TRACE_INCLUDE_PATH .*|#define TRACE_INCLUDE_PATH .|' "$src/virtgpu_trace.h"
+echo 'CFLAGS_virtgpu_trace_points.o := -I$(src)' >> "$src/Makefile"
+if ! make -s -j"$(nproc)" -C "/usr/src/kernels/$kernel" M="$src" CONFIG_DRM_VIRTIO_GPU=m modules; then
+  echo "omacvm-gpu: the patched driver does not build on Linux $version: the image keeps the stock virtio-gpu driver"; exit 0
+fi
+[[ $(modinfo -F vermagic "$src/virtio-gpu.ko") == "$kernel "* ]]
+modinfo -F parm "$src/virtio-gpu.ko" | grep -q '^cursor_plane:'
+cp "$src/virtio-gpu.ko" /out/
+echo "$kernel" > /out/kernel
+ls -l /out

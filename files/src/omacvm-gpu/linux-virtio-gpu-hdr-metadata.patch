@@ -1,0 +1,25 @@
+From: OmacVM
+Subject: [PATCH] drm/virtio: HDR output metadata on the connectors with deep colour
+
+A compositor gives its HDR output's metadata (PQ, luminances) to the
+connector's HDR_OUTPUT_METADATA property. virtio-gpu has none, so screen
+recorders that read the plane over KMS (gpu-screen-recorder) take a PQ
+scanout for SDR: grey, flat recordings. Attach the property while virgl 3D
+and deep_color=1 are on. The DRM core keeps the blob; the host gets nothing
+new and the screen does not change.
+
+Upstream: could go with the deep colour patch; not sent.
+Test: hdrprobe lists HDR_OUTPUT_METADATA on each connector, and with
+Hyprland's supports_hdr its blob has EOTF 2 (SMPTE ST 2084).
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -305,6 +305,9 @@
+ 	drm_connector_helper_add(connector, &virtio_gpu_conn_helper_funcs);
+ 	if (vgdev->has_edid)
+ 		drm_connector_attach_edid_property(connector);
++	/* compositors set their HDR output's metadata; KMS recorders read it */
++	if (vgdev->has_virgl_3d && virtio_gpu_deep_color)
++		drm_connector_attach_hdr_output_metadata_property(connector);
+ 
+ 	drm_simple_encoder_init(dev, encoder, DRM_MODE_ENCODER_VIRTUAL);
+ 	drm_encoder_helper_add(encoder, &virtio_gpu_enc_helper_funcs);

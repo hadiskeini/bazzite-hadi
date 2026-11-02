@@ -16,6 +16,16 @@ stages:
       - type: script
         scripts:
           - build-v4l2loopback.sh
+  - name: omacvm-gpu
+    from: quay.io/fedora/fedora-silverblue:45
+    modules:
+      - type: files
+        files:
+          - source: src/omacvm-gpu
+            destination: /src
+      - type: script
+        scripts:
+          - build-omacvm-gpu.sh
 
 modules:
   - from-file: vm-host.yml

@@ -1,0 +1,49 @@
+From: OmacVM
+Subject: [PATCH] drm/virtio: keep the compositor's damage for rendered buffers
+
+The guest's flush rects tell the host what changed (OmacVM.app's QEMU draws
+only that into the window: partial present, ADR 0051). Linux up to 7.3 sets
+ignore_damage_clips whenever the framebuffer changes, which a compositor
+does on every frame, so every flush covered the whole plane. Keep the
+damage for rendered (virgl) buffers; dumb buffers keep the full update
+their per-buffer uploads need. Recalculated on every check, so an fbdev
+dumb buffer before does not stick.
+
+Upstream: in Linux 7.4 (730f8554f35c "drm/virtio: preserve damage clips
+for rendered resources", a9cc9905ddb7 "drm/virtio: Recalculate
+ignore_damage_clips on every update", Christian Hergert), squashed;
+omacvm-virtio-gpu-build skips it on a kernel that has it.
+Test: src/tests/virtio-gpu-load.sh (the builder applies it only to a kernel
+with the old line), src/tests/virtio-gpu-patches.sh (applies to v7.2.11 and
+v7.3 after the deep-colour and cursor-plane patches). In a VM (Mac mini,
+7.2.11, Hyprland's software pointer moving): QEMU's tiled present got the
+pointer's boxes (8x16 at first) and drew 3127 of 3596 frames a minute in
+tiles, its check found 0 of 201 tiles that differ from a full draw; with
+the stock driver every frame stayed whole.
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -138,6 +138,7 @@
+ 										 plane);
+ 	struct drm_plane_state *old_plane_state = drm_atomic_get_old_plane_state(state,
+ 										 plane);
++	struct virtio_gpu_object *bo;
+ 	bool is_cursor = plane->type == DRM_PLANE_TYPE_CURSOR;
+ 	struct drm_crtc_state *crtc_state;
+ 	int ret;
+@@ -148,10 +149,13 @@
+ 	/*
+ 	 * Ignore damage clips if the framebuffer attached to the plane's state
+ 	 * has changed since the last plane update (page-flip). In this case, a
+-	 * full plane update should happen because uploads are done per-buffer.
++	 * full plane update should happen for dumb buffers because uploads are
++	 * done per-buffer. Rendered resources are already coherent on the host,
++	 * so preserve userspace's accumulated per-buffer damage for those.
+ 	 */
+-	if (old_plane_state->fb != new_plane_state->fb)
+-		new_plane_state->ignore_damage_clips = true;
++	bo = gem_to_virtio_gpu_obj(new_plane_state->fb->obj[0]);
++	new_plane_state->ignore_damage_clips =
++		old_plane_state->fb != new_plane_state->fb && bo->dumb;
+ 
+ 	crtc_state = drm_atomic_get_crtc_state(state,
+ 					       new_plane_state->crtc);

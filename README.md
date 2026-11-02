@@ -11,7 +11,8 @@ The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 - `recipes/shared.yml` — preferences valid on any Bazzite machine
 - `recipes/pc.yml` — facts about pc-bazzite (hardware, kernel arguments, masks)
 - `recipes/vm.yml` — vm-silverblue: base image, build stages, module order
-- `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM udev rules)
+- `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM's GPU driver and
+  shims, OmacVM udev rules)
 - `recipes/niri.yml` — niri (daily builds of its main branch) and Dux Shell, in both images
 - `files/` — files copied into the images, sources for the build stages, build scripts
 - `.github/workflows/image.yml` — one image: check inputs, build, test the ostree import, move `latest`;

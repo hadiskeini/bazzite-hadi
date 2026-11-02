@@ -1,0 +1,65 @@
+From: OmacVM
+Subject: [PATCH] drm/virtio: cursor plane for compositors without hotspots
+
+Module option cursor_plane, off by default (the stock behaviour).
+
+Since Linux 6.8 a virtual GPU hides its cursor plane from atomic clients
+that do not send cursor hotspots (DRIVER_CURSOR_HOTSPOT,
+drm_mode_getplane_res). Hyprland's aquamarine does not, so Hyprland draws
+the pointer into its frames, and every pointer move costs a whole frame on
+the Mac's GPU. QEMU here shows the plane's image at the plane's top left
+(a layer over the window of each output), so it needs no hotspot: with
+cursor_plane=1 the feature bit is cleared and the planes show.
+
+Every output keeps its cursor plane, as in the stock driver. An output
+without one gets no pointer at all: aquamarine 0.15.1 takes a cursor for
+an output whose CRTC has no cursor plane without an error (and its commit
+leaves it out), so Hyprland does not draw that output's pointer itself
+either (#554: no pointer on an external display). The option is readable
+by every user (0444): Hyprland's config reads it as the desktop user.
+
+Applies after linux-virtio-gpu-deep-color.patch. Upstream: not for
+sending (the hotspot rule is right for hosts that place the cursor by its
+hotspot). Test: src/tests/virtio-gpu-load.sh (the option per start, a
+cursor plane on every output); in a VM,
+/sys/module/virtio_gpu/parameters/cursor_plane reads Y and debugfs
+shows the pointer on the cursor plane of the output it is on (AR24 64x64).
+
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.c
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.c
+@@ -52,6 +52,10 @@
+ MODULE_PARM_DESC(modeset, "Disable/Enable modesetting");
+ module_param_named(modeset, virtio_gpu_modeset, int, 0400);
+ 
++bool virtio_gpu_cursor_plane;
++MODULE_PARM_DESC(cursor_plane, "Show the cursor plane to compositors that send no cursor hotspots (the host shows the image at the plane's top left)");
++module_param_named(cursor_plane, virtio_gpu_cursor_plane, bool, 0444);
++
+ static int virtio_gpu_pci_quirk(struct drm_device *dev)
+ {
+ 	struct pci_dev *pdev = to_pci_dev(dev->dev);
+@@ -91,6 +95,13 @@
+ 	dev = drm_dev_alloc(&driver, vdev->dev.parent);
+ 	if (IS_ERR(dev))
+ 		return PTR_ERR(dev);
++	/*
++	 * A virtual GPU hides its cursor plane from atomic clients that send no
++	 * hotspots (drm_mode_getplane_res). The host here shows the image at the
++	 * plane's top left, so it needs none: with cursor_plane=1 it shows.
++	 */
++	if (virtio_gpu_cursor_plane)
++		dev->driver_features &= ~DRIVER_CURSOR_HOTSPOT;
+ 	vdev->priv = dev;
+ 
+ 	if (dev_is_pci(vdev->dev.parent)) {
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h
+@@ -478,6 +478,8 @@
+ int virtio_gpu_modeset_init(struct virtio_gpu_device *vgdev);
+ void virtio_gpu_modeset_fini(struct virtio_gpu_device *vgdev);
+ 
++extern bool virtio_gpu_cursor_plane;
++
+ /* virtgpu_plane.c */
+ uint32_t virtio_gpu_translate_format(uint32_t drm_fourcc);
+ bool virtio_gpu_format_3d_only(uint32_t drm_fourcc);
