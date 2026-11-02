@@ -70,3 +70,4 @@ modules:
     user:
       enabled:
         - omacvm-clipboard.service   # niri; GNOME has the omacvm-integration extension
+        - omacvm-bridge-events.socket   # OmacVM Bridge on the Mac: the Mac's volume and brightness popups

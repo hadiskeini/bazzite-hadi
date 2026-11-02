@@ -1,0 +1,9 @@
+[Unit]
+Description=omacvm-bridge-events: one Bridge event stream for the bar widgets and the OSD
+
+[Socket]
+ListenStream=%t/omacvm-bridge-events.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

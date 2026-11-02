@@ -1,0 +1,8 @@
+[Unit]
+Description=omacvm-bridge-events: one Bridge event stream for the bar widgets and the OSD
+Requires=omacvm-bridge-events.socket
+
+[Service]
+ExecStart=/usr/libexec/omacvm-bridge-events
+Restart=on-failure
+RestartSec=3

@@ -30,6 +30,15 @@ modules:
           - niri
 
   # Dux Shell starts with niri only, not with GNOME (its own unit is WantedBy graphical-session.target).
+  # oo7-daemon: the secret service that takes the login password from pam_oo7 (within 120 s of login). GNOME's
+  # session starts it. In niri, D-Bus started gnome-keyring instead: a locked, separate keyring, and Brave made a new
+  # cookie key there and dropped every cookie. So niri starts oo7 too, and D-Bus activation goes only to oo7.
   - type: script
     snippets:
-      - mkdir -p /usr/lib/systemd/user/niri.service.wants && ln -s ../dms.service /usr/lib/systemd/user/niri.service.wants/dms.service
+      - mkdir -p /usr/lib/systemd/user/niri.service.wants
+      - ln -s ../dms.service /usr/lib/systemd/user/niri.service.wants/dms.service
+      - |
+        if [ -f /usr/lib/systemd/user/oo7-daemon.service ]; then
+          ln -s ../oo7-daemon.service /usr/lib/systemd/user/niri.service.wants/oo7-daemon.service
+          printf '%s\n' '[D-BUS Service]' 'Name=org.freedesktop.secrets' 'Exec=/bin/false' 'SystemdService=oo7-daemon.service' > /usr/share/dbus-1/services/org.freedesktop.secrets.service
+        fi
