@@ -1,0 +1,13 @@
+# holdsuper's front end in niri (GNOME has the extension hold-super@hadi.local): without it the side button stays Forward only.
+[Unit]
+Description=holdsuper front end for niri (game detection, pass mode)
+PartOf=niri.service
+After=niri.service holdsuper.service
+
+[Service]
+ExecStart=/usr/libexec/holdsuper-niri
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=niri.service
