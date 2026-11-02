@@ -7,8 +7,8 @@ modules:
     repos:
       copr:
         - yalter/niri-git
-        - avengemedia/dms-git
-        - avengemedia/danklinux   # quickshell-git for Dux Shell
+        - duxlabs/dms-git
+        - duxlabs/dux-repo        # quickshell-git for Dux Shell
       cleanup: true
     install:
       packages:
