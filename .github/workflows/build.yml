@@ -16,7 +16,8 @@ on:
   workflow_dispatch:          # a manual run always builds
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
-  cancel-in-progress: true
+  # A scheduled run waits for a running build instead of cancelling it, and then skips what that build promoted.
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 jobs:
   bazzite-hadi:
     uses: ./.github/workflows/image.yml

@@ -4,6 +4,8 @@
 # versions alone come in with the weekly build.
 set -euo pipefail
 echo "base=$(skopeo inspect --raw docker://quay.io/fedora/fedora-silverblue:45 | sha256sum | cut -c1-64)"
-echo "files=$(git ls-files -s -- recipes/vm.yml recipes/vm-host.yml files/vm \
-  files/scripts/build-v4l2loopback.sh files/scripts/vm-mesa.sh \
+echo "files=$(git ls-files -s -- recipes/vm.yml recipes/vm-host.yml recipes/niri.yml files/vm \
+  files/src/omacvm-gpu files/src/omacvm-battery files/src/omacvm-backlight \
+  files/scripts/build-v4l2loopback.sh files/scripts/vm-mesa.sh files/scripts/build-omacvm-gpu.sh \
+  files/scripts/build-omacvm-modules.sh files/scripts/install-omacvm-gpu.sh files/scripts/install-omacvm-modules.sh \
   .github/workflows/image.yml .github/fingerprint/silverblue-vm.sh | sha256sum | cut -c1-64)"
