@@ -14,6 +14,7 @@ The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 - `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM's GPU driver and
   shims, OmacVM udev rules)
 - `recipes/niri.yml` — niri (daily builds of its main branch) and Dux Shell, in both images
+- `docs/quirks.md` — workarounds that exist only because of a gap elsewhere, and when to check them
 - `files/` — files copied into the images, sources for the build stages, build scripts
 - `.github/workflows/image.yml` — one image: check inputs, build, test the ostree import, move `latest`;
   `build.yml` runs it once per image. `.github/fingerprint/<image>.sh` lists each image's inputs, so a change
