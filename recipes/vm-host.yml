@@ -52,3 +52,21 @@ modules:
   - type: script
     scripts:
       - install-omacvm-gpu.sh
+
+  # The Mac's battery as a real one (BAT0, ADP0): GNOME's and Dux Shell's own indicators show it. The module comes
+  # from the stage omacvm-battery (files/src/omacvm-battery), the agent and its unit from files/vm.
+  - type: copy
+    from: omacvm-battery
+    src: /out/
+    dest: /tmp/omacvm-battery/
+  - type: script
+    scripts:
+      - install-omacvm-battery.sh
+
+  - type: systemd
+    system:
+      enabled:
+        - omacvm-battery.service
+    user:
+      enabled:
+        - omacvm-clipboard.service   # niri; GNOME has the omacvm-integration extension

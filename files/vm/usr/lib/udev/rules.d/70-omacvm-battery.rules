@@ -1,0 +1,2 @@
+# OmacVM.app's battery port: root only (omacvm-battery.service).
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.omacvm.battery", MODE="0600"

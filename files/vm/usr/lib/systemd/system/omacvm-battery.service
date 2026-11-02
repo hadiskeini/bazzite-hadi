@@ -1,0 +1,17 @@
+[Unit]
+Description=OmacVM: the Mac's battery in the VM (BAT0, ADP0)
+# Without the module (not built for this kernel yet) there is nothing to feed;
+# systemd checks again on every start.
+ConditionPathExists=/sys/devices/platform/omacvm-battery/state
+After=network-online.target
+Wants=network-online.target
+# It exits whenever the Mac's side goes away (asleep, Bridge restarting).
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/omacvm-battery
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

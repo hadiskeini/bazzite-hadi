@@ -1,0 +1,16 @@
+[Unit]
+Description=OmacVM.app: the Mac's clipboard, both ways (Wayland desktops other than GNOME)
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionPathExists=/dev/virtio-ports/org.omacvm.clipboard
+StartLimitIntervalSec=0
+
+[Service]
+# GNOME has no data-control protocol; there the omacvm-integration extension holds the port.
+ExecCondition=/bin/sh -c '[ "$$XDG_CURRENT_DESKTOP" != GNOME ]'
+ExecStart=/usr/libexec/omacvm-clipboard
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

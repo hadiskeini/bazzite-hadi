@@ -1,0 +1,297 @@
+#!/usr/bin/python3
+"""omacvm-battery: the Mac's battery in the VM (root, omacvm-battery.service).
+
+Takes the Mac's battery snapshots and writes each one, as one line, to the
+omacvm-battery kernel module, which shows them as BAT0 and ADP0 (UPower, and
+so Omarchy's bar, read those). Where the snapshots come from:
+
+  OmacVM.app      the virtio port org.omacvm.battery (the app's own bridge);
+                  this agent asks once for a fresh one when it starts
+  UTM, Fusion     OmacVM Bridge on the Mac: "battery" events of
+                  `omacvm-bridge events` (GET /battery has the same object)
+
+A snapshot (JSON):
+  {"present": true, "percentage": 57, "state": "discharging",
+   "acConnected": false, "timeToEmptySeconds": 8100, "timeToFullSeconds": null,
+   "chargeLimit": 80, "chargeNowMicroAh": ..., "chargeFullMicroAh": ...,
+   "chargeFullDesignMicroAh": ..., "voltageMicroV": ..., "cycleCount": 213,
+   "currentMicroA": -573000, "powerMicroW": 7183701}
+currentMicroA is signed (below 0: the battery gives power). It and
+powerMicroW come from Macs with OmacVM 3.0.6 or newer; older ones leave them
+out. Other keys are ignored. Nothing goes back to the Mac but the refresh
+request.
+
+From try-omarchy (github.com/omacom/try-omarchy), MIT, (c) Try Omarchy
+contributors: guest/native-overlay/usr/local/bin/omarchy-native-battery-bridge,
+with the Bridge as a second source.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pwd
+import select
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+PORT = Path("/dev/virtio-ports/org.omacvm.battery")
+STATE_FILE = Path("/sys/devices/platform/omacvm-battery/state")
+ENV_FILE = Path("/etc/omacvm/env")
+CLIENT = "/usr/local/share/omacvm/bridge/guest/omacvm-bridge"
+STATES = ("charging", "discharging", "full", "not-charging", "unknown")
+MAX_LINE_BYTES = 4096
+REFRESH_LINE = b'{"type":"refresh","chargeLimit":true,"batteryDetails":true}\n'
+# The Bridge pings every 15 s; nothing for this long: reconnect.
+SILENCE_SECONDS = 45
+# The module's own version (MODULE_VERSION): current_now and power_now go only
+# to 1.1.0 or newer. An older module rejects a line with a word it does not
+# know, whole, and the battery would stay as it was until the next boot.
+MODULE_VERSION = Path("/sys/module/omacvm_battery/version")
+RATE_SINCE = (1, 1, 0)
+INT32_MAX = 2147483647
+DETAIL_FIELDS = {
+    "chargeNowMicroAh": "charge_now",
+    "chargeFullMicroAh": "charge_full",
+    "chargeFullDesignMicroAh": "charge_full_design",
+    "voltageMicroV": "voltage_now",
+    "cycleCount": "cycle_count",
+}
+
+
+def log(message: str) -> None:
+    print(f"omacvm-battery: {message}", file=sys.stderr, flush=True)
+
+
+def say(said: set[str], message: str) -> None:
+    """Log a message once (until `said` is cleared)."""
+    if message not in said:
+        said.add(message)
+        log(message)
+
+
+def is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def decode(message: Any) -> dict[str, Any]:
+    """A checked snapshot, or ValueError."""
+    if not isinstance(message, dict):
+        raise ValueError("not a JSON object")
+    if message.get("type", "state") != "state":
+        raise ValueError("not a battery state")
+    present, ac = message.get("present"), message.get("acConnected")
+    if not isinstance(present, bool) or not isinstance(ac, bool):
+        raise ValueError("present and acConnected must be true or false")
+    if message.get("state") not in STATES:
+        raise ValueError("unknown battery state")
+    percentage = message.get("percentage")
+    if present and not (is_int(percentage) and 0 <= percentage <= 100):
+        raise ValueError("percentage must be 0-100")
+    out = {"present": present, "acConnected": ac, "state": message["state"],
+           "percentage": percentage if present else None}
+    for key in ("timeToEmptySeconds", "timeToFullSeconds"):
+        value = message.get(key)
+        out[key] = value if is_int(value) and value >= 0 else None
+    limit = message.get("chargeLimit")
+    out["chargeLimit"] = limit if present and is_int(limit) and 1 <= limit <= 99 else None
+    for key in DETAIL_FIELDS:
+        value = message.get(key)
+        minimum = 0 if key in ("chargeNowMicroAh", "cycleCount") else 1
+        out[key] = value if present and is_int(value) and minimum <= value <= INT32_MAX else None
+    current, power = message.get("currentMicroA"), message.get("powerMicroW")
+    out["currentMicroA"] = current if present and is_int(current) and -INT32_MAX <= current <= INT32_MAX else None
+    out["powerMicroW"] = power if present and is_int(power) and 0 <= power <= INT32_MAX else None
+    return out
+
+
+def module_has_rate() -> bool:
+    """Whether the loaded module takes current_now and power_now."""
+    try:
+        parts = MODULE_VERSION.read_text().strip().split(".")
+        return tuple(int(p) for p in parts[:3]) >= RATE_SINCE
+    except (OSError, ValueError):
+        return False
+
+
+def state_line(s: dict[str, Any], rate: bool = False) -> bytes:
+    """One whole snapshot for the kernel module. rate: the module takes
+    current_now and power_now (left out when not known: the module then has
+    none)."""
+    ac = 1 if s["acConnected"] else 0
+    if not s["present"]:
+        return f"present=0 ac={ac}\n".encode()
+    def n(v: Any) -> Any:
+        return -1 if v is None else v
+    details = " ".join(f"{field}={n(s[key])}" for key, field in DETAIL_FIELDS.items())
+    if rate:
+        details += "".join(f" {field}={s[key]}" for key, field in
+                           (("currentMicroA", "current_now"), ("powerMicroW", "power_now"))
+                           if s.get(key) is not None)
+    return (f"present=1 status={s['state']} capacity={s['percentage']} ac={ac} "
+            f"time_to_empty={n(s['timeToEmptySeconds'])} time_to_full={n(s['timeToFullSeconds'])} "
+            f"charge_limit={n(s['chargeLimit'])} {details}\n").encode()
+
+
+def unknown_line(last: dict[str, Any] | None) -> bytes:
+    """The Mac is gone: keep the battery, drop what is no longer known."""
+    if last is None or not last["present"]:
+        return f"present=0 ac={1 if last is None or last['acConnected'] else 0}\n".encode()
+    return (f"present=1 status=unknown capacity={last['percentage']} "
+            f"ac={1 if last['acConnected'] else 0} time_to_empty=-1 time_to_full=-1 charge_limit=-1 "
+            + " ".join(f"{field}=-1" for field in DETAIL_FIELDS.values()) + "\n").encode()
+
+
+def write_state(line: bytes) -> None:
+    STATE_FILE.write_bytes(line)
+
+
+class Feeder:
+    def __init__(self) -> None:
+        self.last: dict[str, Any] | None = None
+
+    def line(self, raw: bytes) -> None:
+        try:
+            snapshot = decode(json.loads(raw))
+        except ValueError as error:   # JSONDecodeError is one too
+            log(f"rejected a snapshot: {error}")
+            return
+        if snapshot != self.last:
+            write_state(state_line(snapshot, module_has_rate()))
+            self.last = snapshot
+
+    def gone(self) -> None:
+        try:
+            write_state(unknown_line(self.last))
+        except OSError as error:
+            log(f"could not mark the battery unknown: {error}")
+
+
+def from_port(feeder: Feeder) -> int:
+    """OmacVM.app: newline-separated snapshots on the virtio port."""
+    with PORT.open("r+b", buffering=0) as port:
+        port.write(REFRESH_LINE)
+        buffer = b""
+        while True:
+            chunk = port.read(4096)
+            if not chunk:
+                return 1
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                if raw:
+                    feeder.line(raw)
+            if len(buffer) > MAX_LINE_BYTES:
+                log("a line from the app is too long")
+                return 1
+
+
+def env_value(text: str, key: str) -> str:
+    value = ""
+    for line in text.splitlines():
+        if line.startswith(key + "="):
+            value = line[len(key) + 1:]
+    return value
+
+
+def from_bridge(feeder: Feeder, said: set[str]) -> int:
+    """UTM and Fusion: the Bridge's event stream, through OmacVM's own client
+    (it checks the Bridge's proof before it sends the token)."""
+    user = env_value(ENV_FILE.read_text(), "OMACVM_USER")
+    try:
+        pw = pwd.getpwnam(user)
+        home = pw.pw_dir
+    except KeyError:
+        say(said, f"no desktop user ({user!r}) in {ENV_FILE}")
+        return 1
+    token = f"{home}/.config/omacvm-bridge/token"
+    if not os.path.isfile(token):
+        say(said, f"no Bridge token yet ({token}; omacvm apply puts it there)")
+        return 1
+    env = dict(os.environ, HOME=home, OMACVM_BRIDGE_TOKEN_FILE=token)
+    # The client runs as the desktop user: it reads the token in the user's
+    # home, where a link must not hand this root daemon a file of the system.
+    as_user = dict(user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd="/") if os.geteuid() == 0 else {}
+    proc = subprocess.Popen([CLIENT, "events"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, **as_user)
+    event, buffer, seen = "", b"", time.monotonic()
+    try:
+        while True:
+            ready, _, _ = select.select([proc.stdout], [], [], 5)
+            if ready:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                seen = time.monotonic()
+                buffer += chunk
+                while b"\n" in buffer:
+                    raw, buffer = buffer.split(b"\n", 1)
+                    raw = raw.rstrip(b"\r")
+                    if raw.startswith(b"event: "):
+                        event = raw[7:].decode(errors="replace")
+                    elif raw.startswith(b"data: ") and event == "battery":
+                        feeder.line(raw[6:])
+                if len(buffer) > 1 << 20:
+                    log("the Bridge sent a line that is too long")
+                    break
+            elif time.monotonic() - seen > SILENCE_SECONDS:
+                say(said, "no word from the Bridge: reconnecting")
+                break
+    finally:
+        proc.kill()
+        _, err = proc.communicate()
+        if err.strip():
+            say(said, err.decode(errors="replace").strip().splitlines()[-1])
+    return 1
+
+
+def main() -> int:
+    if not STATE_FILE.exists():
+        log("the omacvm-battery module is not loaded")
+        return 1
+    vm_type = env_value(ENV_FILE.read_text(), "OMACVM_VM_TYPE") if ENV_FILE.exists() else "app"
+    feeder = Feeder()
+    if vm_type == "app":
+        for _ in range(30):   # udev names the port a moment after boot
+            if PORT.exists():
+                break
+            time.sleep(0.5)
+        if not PORT.exists():
+            # An OmacVM.app from before the battery: nothing to wait for.
+            log(f"no {PORT}: this OmacVM.app does not pass the battery (omacvm update)")
+            return 0
+        try:
+            rc = from_port(feeder)
+        except OSError as error:
+            log(f"the battery port failed: {error}")
+            rc = 1
+    elif vm_type in ("utm", "fusion"):
+        # Right after boot the network (or the token) may not be there yet:
+        # keep trying here, slower each time, instead of exiting and leaving
+        # the service failed until systemd restarts it. Each kind of failure
+        # is logged once until the Bridge answers again.
+        delay, said = 2, set()
+        while True:
+            try:
+                from_bridge(feeder, said)
+            except OSError as error:
+                say(said, f"the Bridge failed: {error}")
+            if feeder.last is not None:   # it was connected: start over fast
+                feeder.gone()
+                feeder.last = None
+                log("the Mac's battery is gone for now")
+                delay, said = 2, set()
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    else:
+        log(f"nothing to do on a {vm_type or 'unknown'} VM")
+        return 0
+    feeder.gone()
+    log("the Mac's battery is gone for now")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
