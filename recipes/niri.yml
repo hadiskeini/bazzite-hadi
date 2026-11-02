@@ -19,6 +19,7 @@ modules:
         # Picks the terminal from ~/.config/xdg-terminals.list (Ghostty) for GLib, GNOME and Dux Shell; without it
         # GLib falls back to Ptyxis.
         - xdg-terminal-exec
+        - qt6-qtimageformats      # WebP and more for Dux Shell (Qt): the wallpaper is a .webp
 
   # Fedora's release niri (26.04) has the higher version number. A swap from the COPR alone gives the git build;
   # an install from it alone finds none of niri's dependencies, which come from Fedora.
