@@ -34,6 +34,18 @@ modules:
         packages:
           - niri
 
+  # Fedora has xwayland-satellite 0.8.2: it focuses override-redirect popups, so every Steam menu closes at once.
+  # 0.8.3 has the fix (upstream add2795). Remove this module when Fedora ships 0.8.3 or later.
+  - type: dnf
+    repos:
+      copr:
+        - ulysg/xwayland-satellite
+      cleanup: true
+    replace:
+      - from-repo: copr:copr.fedorainfracloud.org:ulysg:xwayland-satellite
+        packages:
+          - xwayland-satellite
+
   # Dux Shell starts with niri only, not with GNOME (its own unit is WantedBy graphical-session.target).
   # oo7-daemon: the secret service that takes the login password from pam_oo7 (within 120 s of login). GNOME's
   # session starts it. In niri, D-Bus started gnome-keyring instead: a locked, separate keyring, and Brave made a new
