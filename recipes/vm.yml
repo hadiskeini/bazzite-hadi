@@ -19,6 +19,7 @@ stages:
 
 modules:
   - from-file: vm-host.yml
+  - from-file: niri.yml
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:

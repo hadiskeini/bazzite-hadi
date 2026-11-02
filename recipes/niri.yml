@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# niri next to GNOME, with Dux Shell (formerly DankMaterialShell); in both images.
+# niri-git: daily builds of niri's main branch by its author. Dux Shell keeps its old package name, dms.
+# The COPRs are on only for this module; every image build takes their newest packages.
+modules:
+  - type: dnf
+    repos:
+      copr:
+        - yalter/niri-git
+        - avengemedia/dms
+        - avengemedia/danklinux   # quickshell for Dux Shell
+      cleanup: true
+    install:
+      packages:
+        - niri
+        - xwayland-satellite      # X11 apps under niri
+        - fuzzel                  # app launcher on Super+D
+        - dms
