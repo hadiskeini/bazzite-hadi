@@ -12,13 +12,22 @@ modules:
       cleanup: true
     install:
       packages:
-        # Fedora's release niri (26.04) has the higher version number; only this repo gives the git build.
-        - repo: copr:copr.fedorainfracloud.org:yalter:niri-git
-          packages:
-            - niri
+        - niri
         - xwayland-satellite      # X11 apps under niri
         - fuzzel                  # app launcher on Super+D
         - dms
+
+  # Fedora's release niri (26.04) has the higher version number. A swap from the COPR alone gives the git build;
+  # an install from it alone finds none of niri's dependencies, which come from Fedora.
+  - type: dnf
+    repos:
+      copr:
+        - yalter/niri-git
+      cleanup: true
+    replace:
+      - from-repo: copr:copr.fedorainfracloud.org:yalter:niri-git
+        packages:
+          - niri
 
   # Dux Shell starts with niri only, not with GNOME (its own unit is WantedBy graphical-session.target).
   - type: script
