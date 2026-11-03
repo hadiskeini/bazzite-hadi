@@ -24,7 +24,6 @@ modules:
         - gnome-shell-extension-user-theme
         - steamdeck-backgrounds
         - steamdeck-gnome-presets
-        - adw-gtk3-theme
 
   # Bazzite ships Terra turned off at priority 1. Turn it on for Ghostty only, so its dependencies come from Fedora.
   # Bazzite skips weak dependencies: shell-integration is named on purpose.

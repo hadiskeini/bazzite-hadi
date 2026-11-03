@@ -21,6 +21,9 @@ modules:
         # GLib falls back to Ptyxis.
         - xdg-terminal-exec
         - qt6-qtimageformats      # WebP and more for Dux Shell (Qt): the wallpaper is a .webp
+        - dux-calendar            # events in the bar's clock popup; signs in to Google itself
+        - dux-files
+        - khal                    # Dux Shell's fallback calendar backend
 
   # Fedora's release niri (26.04) has the higher version number. A swap from the COPR alone gives the git build;
   # an install from it alone finds none of niri's dependencies, which come from Fedora.
@@ -46,7 +49,8 @@ modules:
         packages:
           - xwayland-satellite
 
-  # Dux Shell starts with niri only, not with GNOME (its own unit is WantedBy graphical-session.target).
+  # Dux Shell and Dux Calendar start with niri only, not with GNOME (their own units are WantedBy
+  # graphical-session.target).
   # oo7-daemon: the secret service that takes the login password from pam_oo7 (within 120 s of login). GNOME's
   # session starts it. In niri, D-Bus started gnome-keyring instead: a locked, separate keyring, and Brave made a new
   # cookie key there and dropped every cookie. So niri starts oo7 too, and D-Bus activation goes only to oo7.
@@ -54,6 +58,7 @@ modules:
     snippets:
       - mkdir -p /usr/lib/systemd/user/niri.service.wants
       - ln -s ../dms.service /usr/lib/systemd/user/niri.service.wants/dms.service
+      - ln -s ../dcal.service /usr/lib/systemd/user/niri.service.wants/dcal.service
       - |
         if [ -f /usr/lib/systemd/user/oo7-daemon.service ]; then
           ln -s ../oo7-daemon.service /usr/lib/systemd/user/niri.service.wants/oo7-daemon.service
