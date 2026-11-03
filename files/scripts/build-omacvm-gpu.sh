@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Build stage "omacvm-gpu" (silverblue-vm): OmacVM's GPU parts from /src (files/src/omacvm-gpu) for the base image's
 # kernel and Mesa, into /out. The stage runs on the same base as the image, so `rpm -q kernel` is the kernel that boots.
-#   /out/virtio-gpu.ko         the virtio-gpu driver with OmacVM's patches; missing when they do not fit or build
+#   /out/virtio-gpu.ko         the virtio-gpu driver with OmacVM's patches
 #   /out/omacvm_drv_video.so   VA-API shim in front of Mesa's virtio_gpu driver
 #   /out/libEGL_omacvm.so.0    glvnd EGL vendor library in front of Mesa's
-# A driver that does not fit a new kernel leaves the image on the stock driver, not without a build: the log says why.
+# The build fails when the patched driver does not fit or build for the kernel, so :latest stays on the last image
+# with it. The damage and HDR patches stay optional.
 set -euo pipefail
 
 kernel=$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | tail -n1)
@@ -33,11 +34,11 @@ done
 fits() { patch --dry-run -s -d "$work" -p1 -f -F 0 -i "/src/$1" > /dev/null; }
 apply() { patch -s -d "$work" -p1 -f -F 0 -i "/src/$1"; }
 if ! fits linux-virtio-gpu-deep-color.patch; then
-  echo "omacvm-gpu: OmacVM's patches do not fit Linux $version: the image keeps the stock virtio-gpu driver"; exit 0
+  echo "omacvm-gpu: OmacVM's patches do not fit Linux $version" >&2; exit 1
 fi
 apply linux-virtio-gpu-deep-color.patch    # the base the other patches apply on; deep_color stays off
 if ! fits linux-virtio-gpu-cursor-plane.patch; then
-  echo "omacvm-gpu: the cursor-plane patch does not fit Linux $version: the image keeps the stock virtio-gpu driver"; exit 0
+  echo "omacvm-gpu: the cursor-plane patch does not fit Linux $version" >&2; exit 1
 fi
 apply linux-virtio-gpu-cursor-plane.patch
 # Linux 7.4 has the damage fix itself; the patch replaces the line older kernels have.
@@ -51,7 +52,7 @@ else echo "omacvm-gpu: the HDR metadata patch does not fit Linux $version: left 
 sed -i 's|^#define TRACE_INCLUDE_PATH .*|#define TRACE_INCLUDE_PATH .|' "$src/virtgpu_trace.h"
 echo 'CFLAGS_virtgpu_trace_points.o := -I$(src)' >> "$src/Makefile"
 if ! make -s -j"$(nproc)" -C "/usr/src/kernels/$kernel" M="$src" CONFIG_DRM_VIRTIO_GPU=m modules; then
-  echo "omacvm-gpu: the patched driver does not build on Linux $version: the image keeps the stock virtio-gpu driver"; exit 0
+  echo "omacvm-gpu: the patched driver does not build on Linux $version" >&2; exit 1
 fi
 [[ $(modinfo -F vermagic "$src/virtio-gpu.ko") == "$kernel "* ]]
 modinfo -F parm "$src/virtio-gpu.ko" | grep -q '^cursor_plane:'
