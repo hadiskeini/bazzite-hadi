@@ -11,6 +11,10 @@ if [[ ! -f $in/virtio-gpu.ko || $(cat "$in/kernel") != "$kernel" ]]; then
 fi
 install -Dm644 "$in/virtio-gpu.ko" "/usr/lib/modules/$kernel/updates/virtio-gpu.ko"
 depmod -a "$kernel"
-[[ $(modinfo -k "$kernel" -n virtio-gpu) == "/usr/lib/modules/$kernel/updates/virtio-gpu.ko" ]]
+# modinfo gives /lib/modules/..., a symlink to /usr/lib/modules/....
+resolved=$(realpath -e "$(modinfo -k "$kernel" -n virtio-gpu)")
+if [[ $resolved != "/usr/lib/modules/$kernel/updates/virtio-gpu.ko" ]]; then
+  echo "virtio-gpu resolves to $resolved, not to OmacVM's driver in updates/" >&2; exit 1
+fi
 echo "OmacVM's virtio-gpu driver for $kernel"
 rm -rf "$in"
