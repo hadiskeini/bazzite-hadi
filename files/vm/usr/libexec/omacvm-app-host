@@ -1,0 +1,27 @@
+#!/bin/bash
+# OmacVM.app: what the Mac tells the VM at start (QEMU SMBIOS OEM strings
+# "omacvm.KEY=VALUE") -> /run/omacvm/host.env, readable by the desktop user.
+# Today: omacvm.notch (rows beside the notch, in pixels, when the window
+# covers them; only an OmacVM.app before 3.0.0 sends it), omacvm.screen
+# (that full-screen size), omacvm.hdr, omacvm.vkwindows (the app shows Vulkan
+# windows Hyprland imports), omacvm.hwcursor (the Mac's cursor shows the
+# pointer: omacvm_app.lua) and omacvm.notchpointer (QEMU parks the guest's
+# pointer in NOTCH as the Mac's leaves for the strip: notchcast does not hide it).
+set -euo pipefail
+out=/run/omacvm/host.env
+install -d -m755 /run/omacvm
+: > "$out.tmp"
+for raw in /sys/firmware/dmi/entries/11-*/raw; do
+  [[ -r $raw ]] || continue
+  python3 - "$raw" >> "$out.tmp" <<'PY'
+import sys
+data = open(sys.argv[1], "rb").read()
+for s in data[data[1]:].split(b"\0"):
+    s = s.decode("ascii", "replace")
+    if s.startswith("omacvm.") and "=" in s:
+        k, v = s[7:].split("=", 1)
+        if k.replace("_", "").isalnum() and v.replace("x", "").replace(".", "").isdigit():
+            print(f"OMACVM_{k.upper()}={v}")
+PY
+done
+chmod 644 "$out.tmp"; mv "$out.tmp" "$out"

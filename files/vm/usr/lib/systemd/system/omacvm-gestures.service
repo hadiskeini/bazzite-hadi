@@ -1,0 +1,13 @@
+[Unit]
+Description=omacvm-gestures: Mac trackpad gestures on a virtual touchpad
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/omacvm/env
+ExecStart=/usr/libexec/omacvm-gestures
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

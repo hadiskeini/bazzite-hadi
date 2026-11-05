@@ -1,0 +1,12 @@
+[Unit]
+Description=OmacVM.app: settings from the Mac
+After=local-fs.target
+# Before any desktop session: its environment reads host.env (omacvm-vulkan-present).
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/omacvm-app-host
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,126 @@
+#!/bin/bash
+# omacvm-status: read-only overview of the OmacVM integrations on this
+# Fedora Silverblue VM. Changes nothing; safe after every update.
+set -uo pipefail
+
+if [[ -t 1 ]]; then G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' D=$'\e[2m' B=$'\e[1m' N=$'\e[0m'; else G= Y= R= D= B= N=; fi
+ok()   { printf '  %s%-4s%s %-22s %s\n' "$G" ok "$N" "$1" "$2"; }
+warn() { printf '  %s%-4s%s %-22s %s\n' "$Y" warn "$N" "$1" "$2"; }
+bad()  { printf '  %s%-4s%s %-22s %s\n' "$R" fail "$N" "$1" "$2"; }
+off()  { printf '  %s%-4s %-22s %s%s\n' "$D" off "$1" "$2" "$N"; }
+section() { printf '\n%s%s%s\n' "$B" "$1" "$N"; }
+active() { systemctl is-active --quiet "$@" 2>/dev/null; }
+# True when version $1 is at least $2.
+at_least() { [[ $(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1) == "$2" ]]; }
+
+export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(id -u)/bus}
+PORTS=/dev/virtio-ports
+VENUS_FLOOR=26.2.4
+
+section "System"
+ok "Fedora" "$(rpm-ostree status --booted --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["version"])' 2>/dev/null || echo '?') · kernel $(uname -r)"
+if [[ -d $PORTS ]]; then
+  ok "Virtio ports" "$(ls "$PORTS" | sed 's/^org\.omacvm\.//; s/^org\.qemu\.//' | tr '\n' ' ')"
+else
+  bad "Virtio ports" "none: not running in OmacVM.app?"
+fi
+active qemu-guest-agent && ok "Guest agent" "running" || bad "Guest agent" "not running (systemctl status qemu-guest-agent)"
+# The disk image's Ignition stamp makes every boot a first boot, and systemd
+# then resets all services to Fedora's presets (sshd and ours go off).
+if [[ -e /boot/ignition.firstboot ]]; then
+  bad "First boot" "/boot/ignition.firstboot exists: every boot resets services (sudo rm it)"
+else
+  ok "First boot" "done"
+fi
+
+section "Graphics"
+mesa=$(rpm -q --qf '%{VERSION}' mesa-vulkan-drivers 2>/dev/null)
+features=$(journalctl -k -b --no-pager -o cat 2>/dev/null | grep -m1 'features: +virgl')
+if [[ $features == *+resource_blob* ]]; then
+  ok "Vulkan (Venus)" "on: the app started the VM with Venus"
+elif at_least "$mesa" "$VENUS_FLOOR"; then
+  warn "Vulkan (Venus)" "off: Mesa $mesa is ready; create venus-ready in the VM folder on the Mac, then restart the VM"
+else
+  off "Vulkan (Venus)" "OpenGL only: Mesa $mesa is below $VENUS_FLOOR"
+fi
+[[ $features == *+virgl* ]] && ok "OpenGL (virgl)" "Mesa $mesa" || bad "OpenGL (virgl)" "no virgl on the virtio GPU"
+# libEGL_omacvm writes "PID ASKED GOT WHY" for the last Ghostty it set up.
+read -r _ _ gl_got gl_why < <(head -c 200 "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omacvm/ghostty-gl" 2>/dev/null | head -1)
+if ! grep -qsx 'OMACVM_GLZINK=1' /run/omacvm/host.env; then
+  off "Ghostty" "on the CPU: the app's switch \"Ghostty on the Mac's GPU\" is off"
+elif [[ -e /run/omacvm/gl-zink-off ]]; then
+  warn "Ghostty" "on the CPU until the VM restarts: /run/omacvm/gl-zink-off exists"
+elif [[ -z ${gl_got:-} ]]; then
+  ok "Ghostty" "switch on; no Ghostty started in this session yet"
+elif [[ $gl_got == zink ]]; then
+  ok "Ghostty" "last one started: Zink on the Mac's GPU"
+else
+  warn "Ghostty" "last one started: $gl_got ($gl_why), not Zink"
+fi
+for b in 25.08 26.08; do
+  v=$(flatpak info org.freedesktop.Platform.GL.default//$b 2>/dev/null | sed -n 's/^ *Version: //p')
+  [[ -n $v ]] || continue
+  at_least "$v" "$VENUS_FLOOR" && ok "Flatpak GL $b" "Mesa $v" || warn "Flatpak GL $b" "Mesa $v: no Vulkan in apps on this runtime"
+done
+
+section "Integrations"
+if [[ ! -e $PORTS/org.omacvm.clipboard ]]; then
+  off "Clipboard" "no port org.omacvm.clipboard"
+else
+  systemctl --user -q is-active omacvm-clipboard && ok "Clipboard" "omacvm-clipboard running" ||
+    bad "Clipboard" "omacvm-clipboard not running (journalctl --user -u omacvm-clipboard)"
+fi
+if [[ ! -e $PORTS/org.omacvm.battery ]]; then
+  off "Battery" "no port org.omacvm.battery (battery=on in the VM folder's features)"
+elif [[ ! -e /sys/devices/platform/omacvm-battery/state ]]; then
+  bad "Battery" "module omacvm_battery not loaded (the silverblue-vm image builds it)"
+elif active omacvm-battery; then
+  ok "Battery" "BAT0 $(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null) %, $(cat /sys/class/power_supply/BAT0/status 2>/dev/null)"
+else
+  bad "Battery" "omacvm-battery not running (journalctl -u omacvm-battery)"
+fi
+
+if active omacvm-gestures; then
+  last=$(journalctl -u omacvm-gestures -b --no-pager -o cat 2>/dev/null | grep -E 'connected to|disconnected|refused|error' | tail -1)
+  [[ $last == *"connected to"* ]] && ok "Gestures" "${last#omacvm-gestures: }" || warn "Gestures" "running, not connected: ${last:-no log yet}"
+else
+  off "Gestures" "omacvm-gestures not running"
+fi
+
+if [[ -x /usr/local/bin/omacvm-audio-latency ]]; then
+  kept=$(cat /var/lib/omacvm/audio-latency 2>/dev/null)
+  set_on=$(/usr/local/bin/omacvm-audio-latency --show 2>/dev/null | grep -c 'usec')
+  if [[ -n $kept ]]; then
+    ok "Sound delay" "$kept ms from the Mac, set on $set_on output port(s)"
+  else
+    warn "Sound delay" "installed, nothing received from the Mac yet"
+  fi
+  [[ $(getsebool virt_qemu_ga_run_unconfined 2>/dev/null) == *"--> on" ]] || bad "Sound delay SELinux" "virt_qemu_ga_run_unconfined is off: the app cannot run it"
+else
+  off "Sound delay" "omacvm-audio-latency not installed"
+fi
+
+if mountpoint -q "$HOME/Mac" 2>/dev/null; then
+  ok "Mac folder" "mounted at ~/Mac"
+elif systemctl is-enabled --quiet omacvm-mac-folder 2>/dev/null; then
+  off "Mac folder" "none shared (choose one in OmacVM.app's VM settings)"
+else
+  off "Mac folder" "omacvm-mac-folder not enabled"
+fi
+
+if [[ -e /etc/omacvm/touchid-key ]] && grep -qs omacvm-touchid /etc/pam.d/sudo; then
+  missing=""
+  for s in sudo-i polkit-1; do
+    p=/etc/pam.d/$s; [[ -e $p ]] || p=/usr/lib/pam.d/$s
+    grep -qs omacvm-touchid "$p" || missing+=" $s"
+  done
+  last=$(journalctl -t omacvm-touchid -b --no-pager -o cat 2>/dev/null | tail -1)
+  if [[ -n $missing ]]; then
+    warn "Touch ID" "not in PAM for:$missing"
+  else
+    ok "Touch ID" "sudo, sudo -i, polkit; last: ${last:-not used since boot}"
+  fi
+else
+  off "Touch ID" "no key: install -m600 the Mac's key to /etc/omacvm/touchid-key"
+fi
+echo

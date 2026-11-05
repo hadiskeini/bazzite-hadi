@@ -1,0 +1,14 @@
+[Unit]
+Description=OmacVM: a Mac USB webcam as /dev/video43 (USB Camera)
+StartLimitIntervalSec=0
+ConditionUser=!@system
+# GDM 49 runs its login screen as gdm-greeter (uid above 999, so not @system): it would take the device first.
+ConditionUser=!gdm-greeter
+
+[Service]
+ExecStart=/usr/libexec/omacvm-usbcam
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

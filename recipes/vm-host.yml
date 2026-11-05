@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
 # Facts about vm-silverblue: OmacVM.app on a MacBook, GPU through virgl (OpenGL) and Venus (Vulkan), the Mac's camera
-# through v4l2loopback. Secrets stay out: /etc/omacvm (the Touch ID key) is written on the VM by silverblue-omacvm.
+# through v4l2loopback. Secrets stay out: the Touch ID key (/etc/omacvm/touchid-key) is put on the VM by hand.
 modules:
   - type: files
     files:
@@ -14,7 +14,7 @@ modules:
   - type: dnf
     install:
       packages:
-        - python3-evdev        # OmacVM's gestures and side-button daemons (silverblue-omacvm)
+        - python3-evdev        # OmacVM's gestures and side-button daemons (files/vm)
         - gcc                  # the C linker for cargo (sys in ~/home); came with akmods before the prebuilt module
 
   # Fedora has no Ghostty. Terra is on only for this module: its dependencies (gtk4-layer-shell) come from Fedora.
@@ -60,12 +60,26 @@ modules:
     scripts:
       - install-omacvm-modules.sh
 
+  # OmacVM's guest agents for this VM (upstream's, files/vm; docs/vm-silverblue.md), and Touch ID for sudo and polkit.
+  - type: script
+    scripts:
+      - install-omacvm-touchid.sh
+
   - type: systemd
     system:
       enabled:
         - omacvm-battery.service
+        - omacvm-app-host.service       # the Mac's settings at start -> /run/omacvm/host.env (Ghostty's GPU, FullPanel)
+        - omacvm-gestures.service
+        - omacvm-mac-folder.service
+        - omacvm-guest-agent-unconfined.service
+        - sshd.service                  # SSH from the Mac
     user:
       enabled:
-        - omacvm-clipboard.service   # niri; GNOME has the omacvm-integration extension
+        - omacvm-clipboard.service
+        - omacvm-side-buttons.service
+        - omacvm-camera.service
+        - omacvm-usbcam.service
+        - omacvm-audio-latency.service
         - omacvm-bridge-events.socket   # OmacVM Bridge on the Mac: the Mac's volume and brightness popups
         - omacvm-mac-levels.service     # the "Mac" output and the "omacvm" backlight follow the Mac
