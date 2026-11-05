@@ -1,0 +1,13 @@
+[Unit]
+Description=OmacVM: mouse side buttons (F18/F19 from the Mac) to buttons and Super
+After=graphical-session.target
+# Not on GDM's login screen: its user cannot open /dev/uinput, and a restart every 2 s follows.
+ConditionUser=!gdm-greeter
+
+[Service]
+ExecStart=/usr/libexec/omacvm-side-buttons
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

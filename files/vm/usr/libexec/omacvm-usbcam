@@ -1,0 +1,56 @@
+#!/usr/bin/python3
+"""A Mac USB webcam as a Linux camera: /dev/video43, "USB Camera", next to omacvm-camera's Mac Camera.
+
+OmacVM.app streams only the MacBook's built-in camera (it picks it first, also with the lid closed).
+This runs upstream's omacvm-camera unchanged as a module, with two differences: its device is
+/dev/video43, and its source is a plain TCP connection to mac/webcam-stream.py on the Mac (launchd,
+port 5800 on the fast network) instead of OmacVM Bridge. As upstream: black frames while nothing
+comes, connected (and the Mac's webcam on) only while an app reads the camera.
+"""
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import socket
+
+MAC = ("192.168.77.1", 5800)
+
+loader = importlib.machinery.SourceFileLoader("omacvm_camera", "/usr/libexec/omacvm-camera")
+spec = importlib.util.spec_from_loader(loader.name, loader)
+camera = importlib.util.module_from_spec(spec)
+loader.exec_module(camera)
+
+
+class MacWebcam:
+    """The Bridge's interface (want, close, fd, rest) over a plain connection to the Mac."""
+
+    def __init__(self, host: str) -> None:
+        self.sock, self.fd, self.rest = None, -1, b""
+
+    def want(self, on: bool) -> bool:
+        if not on:
+            self.close()
+            return True
+        if self.fd >= 0:
+            return True
+        try:
+            s = socket.create_connection(MAC, timeout=5)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * camera.FRAME_BYTES)
+            s.setblocking(False)
+        except OSError as error:
+            camera.log(f"cannot reach the Mac's webcam stream at {MAC[0]}:{MAC[1]}: {error}")
+            return False
+        self.sock, self.fd, self.rest = s, s.fileno(), b""
+        return True
+
+    def close(self) -> None:
+        if self.sock is not None:
+            self.sock.close()
+        self.sock, self.fd = None, -1
+
+
+camera.CAMERA = Path("/dev/video43")
+camera.CLOCK_STATE = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "omacvm-usbcam-clock"
+camera.Bridge = MacWebcam
+camera.env = lambda: {"OMACVM_VM_TYPE": "utm", "OMACVM_HOST": MAC[0]}
+raise SystemExit(camera.main())

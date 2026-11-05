@@ -1,0 +1,171 @@
+#!/usr/bin/python3
+"""Mouse side buttons in the VM (mac/side-buttons.lua sends them as F18 and F19), and Caps Lock.
+
+F18 = back button: BTN_SIDE, pressed and released with the key.
+F19 = forward button: tap = BTN_EXTRA; held past hold_ms, or another button or the
+wheel used while it is down = Super, like holdsuper on the PC.
+Settings come from the hold-super extension over $XDG_RUNTIME_DIR/holdsuper.sock
+("hold <ms>", "overview 0|1"); "pass" is ignored: the VM runs no games.
+With no extension connected (niri), Super goes down at once on the press, so the first
+wheel notch already has Super; a tap still releases Super and then clicks BTN_EXTRA.
+F17 = Caps Lock (mac/caps-lock.lua): a held Caps Lock, so the session's xkb option
+(niri caps:super, GNOME caps:hyper) applies as on the PC.
+"ping" answers "pong"; "click" presses BTN_TASK and answers "ok". niri-at-pointer (~/home)
+uses them: niri's pick-window grab takes that click, apps ignore the button.
+"""
+import asyncio
+import os
+
+import evdev
+from evdev import ecodes as e
+
+KEY_BACK, KEY_FWD, KEY_CAPS = e.KEY_F18, e.KEY_F19, e.KEY_F17
+OWN = "omacvm-side-buttons"
+SUPER = e.KEY_LEFTMETA
+PICK = e.BTN_TASK
+hold_ms, overview = 200, False
+
+kbd = evdev.UInput({e.EV_KEY: [SUPER, e.KEY_CAPSLOCK]}, name=f"{OWN} Super key")
+# libinput takes a device for a pointer only with relative axes.
+mouse = evdev.UInput({e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE, e.BTN_SIDE, e.BTN_EXTRA, PICK],
+                      e.EV_REL: [e.REL_X, e.REL_Y]}, name=f"{OWN} buttons")
+
+state, used, timer = "idle", False, None
+super_down, clients = False, 0
+
+
+def tap(dev, code, value):
+    dev.write(e.EV_KEY, code, value)
+    dev.syn()
+
+
+def set_super(value):
+    global super_down
+    if super_down != value:
+        super_down = value
+        tap(kbd, SUPER, int(value))
+
+
+def resolve_hold():
+    global state, timer
+    if timer:
+        timer.cancel()
+        timer = None
+    state = "held"
+    set_super(True)
+
+
+def forward(value):
+    global state, used, timer
+    if value == 1 and state == "idle":
+        state, used = "pending", False
+        timer = asyncio.get_running_loop().call_later(hold_ms / 1000, resolve_hold)
+        if not clients:
+            set_super(True)
+    elif value == 0 and state == "pending":
+        timer.cancel()
+        timer = None
+        set_super(False)
+        tap(mouse, e.BTN_EXTRA, 1)
+        tap(mouse, e.BTN_EXTRA, 0)
+        state = "idle"
+    elif value == 0 and state == "held":
+        set_super(False)
+        # Mutter's own lone-Super overview never fires here: the F19 release comes
+        # between Super down and up. So a lone hold toggles Activities over D-Bus.
+        if not used and overview:
+            asyncio.get_running_loop().create_task(toggle_overview())
+        state = "idle"
+
+
+async def gdbus(*args):
+    proc = await asyncio.create_subprocess_exec(
+        "gdbus", "call", "--session", "-d", "org.gnome.Shell", "-o", "/org/gnome/Shell",
+        "-m", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    return (await proc.communicate())[0].decode()
+
+
+async def toggle_overview():
+    active = "true" in await gdbus("org.freedesktop.DBus.Properties.Get", "org.gnome.Shell", "OverviewActive")
+    await gdbus("org.freedesktop.DBus.Properties.Set", "org.gnome.Shell", "OverviewActive",
+                "<false>" if active else "<true>")
+
+
+def other_input():
+    global used
+    if state != "idle":
+        used = True
+        if state == "pending":
+            resolve_hold()
+
+
+async def watch(dev):
+    try:
+        async for ev in dev.async_read_loop():
+            if ev.type == e.EV_KEY and ev.code == KEY_FWD:
+                forward(ev.value)
+            elif ev.type == e.EV_KEY and ev.code == KEY_BACK and ev.value in (0, 1):
+                tap(mouse, e.BTN_SIDE, ev.value)
+            elif ev.type == e.EV_KEY and ev.code == KEY_CAPS and ev.value in (0, 1):
+                tap(kbd, e.KEY_CAPSLOCK, ev.value)
+                if ev.value:
+                    other_input()
+            elif (ev.type == e.EV_KEY and ev.value == 1) or (ev.type == e.EV_REL and ev.code in (e.REL_WHEEL, e.REL_HWHEEL)):
+                other_input()
+    except OSError:
+        pass   # the device went away; the scan below finds it again
+
+
+async def scan():
+    watched = set()
+    while True:
+        for path in evdev.list_devices():
+            if path in watched:
+                continue
+            dev = evdev.InputDevice(path)
+            keys = dev.capabilities().get(e.EV_KEY, [])
+            if dev.name.startswith(OWN) or not (KEY_FWD in keys or e.BTN_LEFT in keys):
+                dev.close()
+                continue
+            watched.add(path)
+            task = asyncio.create_task(watch(dev))
+            task.add_done_callback(lambda _t, p=path: watched.discard(p))
+        await asyncio.sleep(5)
+
+
+async def client(reader, writer):
+    global hold_ms, overview, clients
+    extension = False   # a niri-at-pointer connection must not turn off Super at once
+    try:
+        async for line in reader:
+            cmd, _, arg = line.decode().strip().partition(" ")
+            if cmd in ("ping", "click"):
+                if cmd == "click":
+                    tap(mouse, PICK, 1)
+                    tap(mouse, PICK, 0)
+                writer.write(b"pong\n" if cmd == "ping" else b"ok\n")
+                await writer.drain()
+                continue
+            if not extension:
+                extension = True
+                clients += 1
+            if cmd == "hold" and arg.isdigit() and 50 <= int(arg) <= 2000:
+                hold_ms = int(arg)
+            elif cmd == "overview" and arg in ("0", "1"):
+                overview = arg == "1"
+    finally:
+        if extension:
+            clients -= 1
+        writer.close()
+
+
+async def main():
+    sock = os.path.join(os.environ["XDG_RUNTIME_DIR"], "holdsuper.sock")
+    if os.path.exists(sock):
+        os.unlink(sock)
+    server = await asyncio.start_unix_server(client, sock)
+    async with server:
+        await scan()
+
+
+asyncio.run(main())

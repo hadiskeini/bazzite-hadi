@@ -1,0 +1,1454 @@
+#!/usr/bin/env python3
+"""omacvm-gestures (guest side): replays the Mac trackpad's multi-finger
+gestures on a virtual touchpad, so libinput/Hyprland see 3/4-finger swipes and
+pinch/rotate like on a real Apple touchpad; on UTM it also types the Mac's Cmd
+shortcuts as Super.
+
+Connects to the Mac helper (gestures/mac) at the Mac's address on the VM
+network (/etc/omacvm/env). The helper first proves it knows the Bridge's token
+("C <nonce>" from here, "M <nonce> <proof>" back, HMAC-SHA256), then this VM
+does and says what it wants ("R <gestures> <glide> <proof> <name>": the feature
+choices and the VM's name from the same file, the name so the Mac can tell two
+VMs of one app apart). The token itself never goes over the wire, and nothing
+from a listener without the proof is acted on. Then it reads lines:
+  F <n> [<id> <x> <y> <size>]...   finger frame, x/y 0..1 (y down)
+  S <on|off|esc> [<keys>]           capture state (esc = released by the escape combo;
+                                    keys: ctrl-opt, or ctrl-opt-cmd for the old combo;
+                                    none from a Mac helper before 3.0.0 = ctrl-opt-cmd)
+  O <natural> <w> <h>               the Mac's scrolling direction, trackpad size (1/100 mm)
+  A <dx> <dy>, W <dx> <dy>, P       scroll momentum: macOS's scroll while touching, its
+                                    momentum (points), a pinch macOS recognized
+  K <code> <value>                  UTM: a key on the virtual keyboard
+  X <on [2]|off>                    Swipe out to macOS on or off (the Mac's setting); "2": the
+                                    Mac takes such a swipe itself and follows the fingers
+  N <why>                           (Mac helpers up to 3.0.18) the escape combo found no way
+                                    out to macOS: ignored, no notice any more
+and sends, after "X on 2":
+  G <n><ways>... | G -              which swipes switch workspaces (Hyprland's gestures): e.g.
+                                    "G 4lr" = 4 fingers going left and right, "G -" = none;
+                                    at once and after each config reload (when it can be read)
+  E <l> <r>                         where a swipe of fingers going left and right goes now:
+                                    left|right = out to the macOS Space on that side, - = a
+                                    workspace swipe here; at once and on every workspace change
+or, after "X on" (Mac helpers 3.1.0-3.1.5):
+  X <left|right>                    a swipe went past the first or last workspace: out to the
+                                    macOS Space on that side
+
+Without macOS-native scroll momentum (the scroll-momentum feature; "Glide"
+in the code, after the glide that follows a flick) the helper sends 3+-finger frames and 2-finger pinches; pointer,
+clicks and two-finger scrolling come from the VM app's own virtual mouse.
+With it (experimental) every two-finger frame comes too, and the scroll is
+rebuilt here from the real fingers plus macOS's own acceleration and momentum
+(docs/experiments/trackpad-scrolling.md). Runs as root (uinput). No notices
+when the escape combo is used (user, 2026-10-12: "never a notice"), only once
+per VM "New shortcut: ⌃⌥ Esc" when the old ⌃⌥⌘ Esc was.
+A tap with three fingers is a middle click, found here (ThreeFingerTap): the
+VM keeps libinput's tap-to-click off, so one- and two-finger taps do not click.
+"""
+import glob
+import hashlib
+import hmac
+import json
+import math
+import os
+import pwd
+import re
+import secrets
+import select
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+from evdev import AbsInfo, UInput, ecodes as e
+
+def env_float(name, default):
+    """A number from the environment; a malformed value keeps the default."""
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        print(f"omacvm-gestures: {name}={os.environ[name]!r} is not a number, using {default}", file=sys.stderr, flush=True)
+        return float(default)
+
+
+def env_floats(name, default):
+    """Several numbers from the environment (space-separated); malformed: the defaults."""
+    try:
+        v = [float(x) for x in (os.environ.get(name, "") or default).split()]
+        if len(v) == len(default.split()):
+            return v
+    except ValueError:
+        pass
+    if os.environ.get(name):
+        print(f"omacvm-gestures: {name}={os.environ[name]!r} is not {len(default.split())} numbers, using {default!r}",
+              file=sys.stderr, flush=True)
+    return [float(x) for x in default.split()]
+
+
+HOST = os.environ.get("OMACVM_GESTURES_HOST") or os.environ.get("OMACVM_HOST") or "10.211.55.2"
+PORT = int(env_float("OMACVM_GESTURES_PORT", 47830))
+# The VM's feature choices (/etc/omacvm/env, loaded by the service).
+GESTURES = os.environ.get("OMACVM_FEATURE_gestures", "on") == "on"
+# (scroll-momentum was called glide in the experiment)
+GLIDE_ON = GESTURES and (os.environ.get("OMACVM_FEATURE_scroll_momentum")
+                         or os.environ.get("OMACVM_FEATURE_glide", "off")) == "on"
+# The VM's name in its app, base64 (omacvm apply): the Mac sends to the VM whose
+# name is in the front window's title.
+NAME = os.environ.get("OMACVM_VM_NAME_B64", "")
+if not NAME.isascii() or not all(c.isalnum() or c in "+/=" for c in NAME):
+    NAME = ""
+USER = os.environ.get("OMACVM_GESTURES_USER", "")   # default: whoever owns the Wayland session
+# Built-in MacBook Pro 16" trackpad: 156 x 96 mm; 100 units per mm. The real
+# trackpad maps onto the middle of a much larger virtual one, so Glide's
+# momentum has room to run; fingers feel exactly the same.
+W, H, RES = 15600, 9600, 100
+PAD_W, PAD_H = 100000, 100000
+OFF_X, OFF_Y = (PAD_W - W) // 2, (PAD_H - H) // 2
+NATURAL = 1                  # -1 when the Mac scrolls the traditional way ("O" from the Mac)
+
+
+def set_mac(natural, w, h):
+    """The Mac's scrolling direction and its trackpad's size (1/100 mm = units)."""
+    global W, H, OFF_X, OFF_Y, NATURAL
+    NATURAL = 1 if natural else -1
+    if 2000 < w < 40000 and 2000 < h < 30000:
+        W, H = w, h
+        OFF_X, OFF_Y = (PAD_W - W) // 2, (PAD_H - H) // 2
+    print(f"omacvm-gestures: Mac trackpad {W / RES:.0f} x {H / RES:.0f} mm, "
+          f"{'natural' if NATURAL > 0 else 'traditional'} scrolling", flush=True)
+SLOTS = 10
+TOOLS = [e.BTN_TOOL_FINGER, e.BTN_TOOL_DOUBLETAP, e.BTN_TOOL_TRIPLETAP, e.BTN_TOOL_QUADTAP, e.BTN_TOOL_QUINTTAP]
+
+
+def make_device():
+    caps = {
+        e.EV_KEY: [e.BTN_LEFT, e.BTN_TOUCH] + TOOLS,
+        e.EV_ABS: [
+            (e.ABS_X, AbsInfo(0, 0, PAD_W, 0, 0, RES)),
+            (e.ABS_Y, AbsInfo(0, 0, PAD_H, 0, 0, RES)),
+            (e.ABS_MT_SLOT, AbsInfo(0, 0, SLOTS - 1, 0, 0, 0)),
+            (e.ABS_MT_TRACKING_ID, AbsInfo(0, 0, 65535, 0, 0, 0)),
+            (e.ABS_MT_POSITION_X, AbsInfo(0, 0, PAD_W, 0, 0, RES)),
+            (e.ABS_MT_POSITION_Y, AbsInfo(0, 0, PAD_H, 0, 0, RES)),
+        ],
+    }
+    # Apple vendor id, Magic Trackpad (USB-C) product id: libinput applies its
+    # Apple touchpad handling. INPUT_PROP_BUTTONPAD = clickpad.
+    return UInput(caps, name="Apple Inc. Magic Trackpad (OmacVM)", vendor=0x05AC, product=0x0324,
+                  version=0x0111, bustype=e.BUS_USB, input_props=[e.INPUT_PROP_POINTER, e.INPUT_PROP_BUTTONPAD])
+
+
+class Touchpad:
+    def __init__(self, ui):
+        self.ui = ui
+        self.slots = {}          # mac contact id -> slot
+        self.next_tid = 1
+        self.tool = None
+        self.last_write = 0.0
+        self.pending = None
+
+    MIN_GAP = 0.003      # seconds between frames: libinput normalizes movement to time,
+                         # so frames microseconds apart look like leaps ("touch jump")
+
+    def frame(self, contacts):
+        """Write a frame; the same fingers' frames arriving closer than MIN_GAP are
+        coalesced (positions are absolute), a lift and a new touch never share
+        one frame (libinput rejects that)."""
+        ids = {c[0] for c in contacts}
+        if contacts and ids == set(self.slots) and time.monotonic() - self.last_write < self.MIN_GAP:
+            self.pending = contacts
+            return
+        self.pending = None
+        if contacts and set(self.slots) - ids and ids - set(self.slots):
+            self._write([c for c in contacts if c[0] in self.slots])   # lifts first
+        self._write(contacts)
+
+    def flush(self):
+        if self.pending is not None and time.monotonic() - self.last_write >= self.MIN_GAP:
+            contacts, self.pending = self.pending, None
+            self._write(contacts)
+
+    def _write(self, contacts):
+        ui = self.ui
+        ids = {c[0] for c in contacts}
+        for cid in [c for c in self.slots if c not in ids]:          # lifted fingers
+            ui.write(e.EV_ABS, e.ABS_MT_SLOT, self.slots.pop(cid))
+            ui.write(e.EV_ABS, e.ABS_MT_TRACKING_ID, -1)
+        free = [s for s in range(SLOTS) if s not in self.slots.values()]
+        for cid, x, y in contacts:
+            if cid not in self.slots:
+                if not free:
+                    continue
+                self.slots[cid] = free.pop(0)
+                ui.write(e.EV_ABS, e.ABS_MT_SLOT, self.slots[cid])
+                ui.write(e.EV_ABS, e.ABS_MT_TRACKING_ID, self.next_tid)
+                self.next_tid = self.next_tid % 65535 + 1
+            ui.write(e.EV_ABS, e.ABS_MT_SLOT, self.slots[cid])
+            ui.write(e.EV_ABS, e.ABS_MT_POSITION_X, x)
+            ui.write(e.EV_ABS, e.ABS_MT_POSITION_Y, y)
+        n = len(self.slots)
+        tool = TOOLS[min(n, 5) - 1] if n else None
+        if tool != self.tool:
+            if self.tool is not None:
+                ui.write(e.EV_KEY, self.tool, 0)
+            if tool is not None:
+                ui.write(e.EV_KEY, tool, 1)
+            if (self.tool is None) != (tool is None):
+                ui.write(e.EV_KEY, e.BTN_TOUCH, 1 if tool else 0)
+            self.tool = tool
+        if contacts:
+            ui.write(e.EV_ABS, e.ABS_X, contacts[0][1])
+            ui.write(e.EV_ABS, e.ABS_Y, contacts[0][2])
+        ui.syn()
+        self.last_write = time.monotonic()
+        if RECORD:
+            n = len(contacts)
+            ax = sum(c[1] for c in contacts) / n if n else 0
+            ay = sum(c[2] for c in contacts) / n if n else 0
+            RECORD.write(f"V\t{time.time():.4f}\t{n}\t{ax:.1f}\t{ay:.1f}\n")
+
+    def release(self):
+        if self.slots or self.tool:
+            self.frame([])
+
+
+# Scroll momentum's settings (OMACVM_GLIDE_* in a systemd drop-in; defaults = the tuned values).
+DEBUG = bool(os.environ.get("OMACVM_GLIDE_DEBUG"))
+# OMACVM_GLIDE_RECORD=1: every virtual-touchpad frame (time, fingers, centre)
+# to /var/log/omacvm-output.tsv, to compare with the Mac's input recording
+# (omacvm-gestures --record on the Mac; docs/experiments/scroll-analysis).
+RECORD = open("/var/log/omacvm-output.tsv", "a", buffering=1) if os.environ.get("OMACVM_GLIDE_RECORD") else None
+# Seconds without scrolling before the virtual fingers lift. libinput only
+# starts a two-finger scroll after the fingers have moved a little; staying
+# down through the pauses of slow, fine scrolling avoids paying that again.
+HOLD = env_float("OMACVM_GLIDE_HOLD", 0.5)
+
+
+class TouchScroll:
+    """macOS's scroll deltas as two fingers moving on the virtual touchpad: for
+    continuous scrolling without fingers on the built-in trackpad (Magic Mouse)."""
+    IDS = (100001, 100002)
+
+    def __init__(self, pad):
+        self.pad = pad
+        self.down = False
+        self.last = 0.0
+        self.x = self.y = 0.0
+
+    def _place(self):
+        self.x, self.y = PAD_W / 2, PAD_H / 2
+        self.down = True
+
+    def _frame(self):
+        x, y, gap = round(self.x), round(self.y), 1500
+        self.pad.frame([(self.IDS[0], x - gap // 2, y), (self.IDS[1], x + gap // 2, y)])
+
+    def scroll(self, dx, dy):
+        # macOS's deltas already follow its scrolling direction: content moves
+        # with the fingers.
+        if not self.down:
+            self._place()
+            self._frame()
+        nx = self.x + dx * POINT_UNITS
+        ny = self.y + dy * POINT_UNITS
+        if not (1500 < nx < PAD_W - 1500 and 1000 < ny < PAD_H - 1000):
+            # Off the edge: hold still for a moment, lift, start again in the middle.
+            for _ in range(3):
+                self._frame()
+                time.sleep(0.008)
+            self.pad.frame([])
+            self._place()
+            self._frame()
+            nx, ny = self.x + dx * POINT_UNITS, self.y + dy * POINT_UNITS
+        self.x, self.y = nx, ny
+        self._frame()
+        self.last = time.monotonic()
+
+    def idle(self):
+        if self.down and time.monotonic() - self.last > HOLD:
+            self.pad.frame([])
+            self.down = False
+
+
+class OneEuro:
+    """One Euro filter (Casiez et al.): smooths strongly when slow or still (finger
+    jitter), hardly at all when fast (no lag). Values in millimetres."""
+
+    def __init__(self, min_cutoff, beta, d_cutoff=1.0):
+        self.min_cutoff, self.beta, self.d_cutoff = min_cutoff, beta, d_cutoff
+        self.x = self.dx = self.t = None
+
+    @staticmethod
+    def _alpha(cutoff, dt):
+        tau = 1.0 / (2 * math.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+
+    def __call__(self, x, t):
+        if self.x is None:
+            self.x, self.dx, self.t = x, 0.0, t
+            return x
+        dt = max(t - self.t, 1e-4)
+        dx = (x - self.x) / dt
+        if abs(dx) > abs(self.dx):
+            # Fast attack: a finger that speeds up is followed at once (measured:
+            # starting from "still", the filter lagged ~100 ms into every flick
+            # and the movement it had not caught up with by the lift was lost);
+            # slowing down is smoothed as before.
+            self.dx = dx
+        else:
+            a_d = self._alpha(self.d_cutoff, dt)
+            self.dx = a_d * dx + (1 - a_d) * self.dx
+        a = self._alpha(self.min_cutoff + self.beta * abs(self.dx), dt)
+        self.x = a * x + (1 - a) * self.x
+        self.t = t
+        return self.x
+
+
+# "min_cutoff beta d_cutoff": smoothing at rest (Hz), how fast it opens with
+# speed, and how quickly a change of speed is noticed (Hz).
+FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF = env_floats("OMACVM_GLIDE_FILTER", "1.5 0.4 8")
+# Slow scrolling follows the raw fingers, fast scrolling macOS's own accelerated
+# scroll (the "A" lines): below BLEND_V0 mm/s raw, above BLEND_V1 macOS's,
+# smoothly blended in between.
+BLEND_V0, BLEND_V1 = env_floats("OMACVM_GLIDE_BLEND", "80 160")
+# Virtual touchpad units per 1/100 mm of real finger movement while scrolling:
+# below 1 keeps the virtual fingers slow, so libinput's touch-jump limit never
+# caps a fast scroll; the compositor's scroll factor for the virtual trackpad
+# makes up for it (omacvm_glide.lua).
+RAW_SCALE = env_float("OMACVM_GLIDE_RAW_SCALE", 0.184)
+# Units per macOS point: measured at display scale 2 (1 unit = 0.408 px on
+# screen), 2.45 units make 1 macOS point one on-screen pixel, like macOS.
+POINT_UNITS = env_float("OMACVM_GLIDE_POINT_UNITS", 2.45)
+# How far the glide after a flick carries, relative to macOS's momentum (1 =
+# macOS's distance; measured within 5-10 %), and the time constant (s) that
+# smooths macOS's momentum steps into a continuous movement.
+GLIDE = env_float("OMACVM_GLIDE_DISTANCE", 1.0)
+GLIDE_TAU = env_float("OMACVM_GLIDE_TAU", 0.025)
+# Top speed of the virtual fingers (units/s): 1000 mm/s, under libinput's
+# touch-jump limit (about 20 mm per 12 ms).
+MAX_RATE = env_float("OMACVM_GLIDE_MAX_RATE", 100000)
+
+# Self-calibration of slow (raw) scrolling to this Mac's scrolling speed: macOS
+# points per millimetre of finger at medium speed (40-120 mm/s), relative to
+# the reference Mac OmacVM was tuned on (6.74; MacBook Pro 16", default
+# scrolling speed, measured over five recordings).
+CAL_REF = 6.74
+CAL_FILE = "/var/lib/omacvm/scroll-calibration"
+
+
+def load_cal():
+    try:
+        return min(max(float(open(CAL_FILE).read().split()[0]), 0.5), 2.0)
+    except (OSError, ValueError, IndexError):
+        return 1.0
+
+
+class Glide:
+    """Glide: the real two-finger frames while the fingers touch (precise to
+    hundredths of a millimetre, macOS's acceleration blended in when fast), then
+    macOS's momentum on the same virtual fingers, which stay down until it has
+    died down, so apps add no fling of their own."""
+    MOMENTUM_WAIT = 0.15     # seconds to wait for macOS's momentum after a lift
+
+    def __init__(self, pad):
+        self.pad = pad
+        self.touch = TouchScroll(pad)
+        self.contacts = []   # the last real contacts
+        self.hist = []       # (time, x, y) of the two-finger centroid, last frames
+        self.held = None     # contacts kept down after the real fingers lifted
+        self.lifted = 0.0
+        self.moved = 0.0     # last momentum step
+        self.pending = [0.0, 0.0]   # momentum not yet applied, touchpad units
+        self.tick = 0.0
+        self.two = None      # current two-finger touch: ids, offsets, mode, filters
+        self.adelta = [0.0, 0.0]   # macOS's scroll since the last frame (points)
+        self.cal = load_cal()       # slow-scrolling gain for this Mac's scrolling speed
+        self.cal_pts = self.cal_mm = 0.0
+        self.logged = 0.0
+
+    def frame(self, contacts):
+        now = time.monotonic()
+        if contacts:
+            if self.held is not None:
+                # Fingers back during a glide: end the glide's touch first, so
+                # the new touch does not continue it (the trackpad reuses ids)
+                # and leap back from where the glide had got to.
+                self.held = None
+                self.pending = [0.0, 0.0]
+                self.pad.frame([])
+            self.touch.down = False
+            if len(contacts) == 2:
+                contacts = self.two_fingers(contacts, now)
+            elif self.two is not None:
+                # Leaving a two-finger scroll (a third finger, a swipe): its
+                # virtual positions differ from the raw ones, so end that touch
+                # instead of letting the fingers leap (libinput drops leaps as jumps).
+                if not self.two["pinch"]:
+                    self.pad.frame([])
+                self.two = None
+            if len(contacts) == 2:
+                self.hist = (self.hist + [(now, (contacts[0][1] + contacts[1][1]) / 2,
+                                           (contacts[0][2] + contacts[1][2]) / 2)])[-5:]
+            else:
+                self.hist = []
+            self.contacts = contacts
+            self.pad.frame(contacts)
+            return
+        self.calibrate()
+        self.two = None
+        if len(self.contacts) == 2 and len(self.hist) >= 2:
+            # Two fingers lifted: stay down, macOS's momentum may follow.
+            self.held = [list(c) for c in self.contacts]
+            self.lifted = now
+            self.pending = [0.0, 0.0]
+            self.contacts = []
+            return
+        self.contacts, self.hist = [], []
+        self.pad.frame([])
+
+    def two_fingers(self, contacts, now):
+        """Scroll stays scroll: the fingers' spacing is fixed at touch-down and the
+        filtered centre moves; a pinch (macOS's call) switches to raw fingers."""
+        ids = (contacts[0][0], contacts[1][0])
+        cx = (contacts[0][1] + contacts[1][1]) / 2
+        cy = (contacts[0][2] + contacts[1][2]) / 2
+        t = self.two
+        if t is None or t["ids"] != ids:
+            t = self.two = {"ids": ids, "pinch": False,
+                            "off": [(c[1] - cx, c[2] - cy) for c in contacts],
+                            "fx": OneEuro(FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF),
+                            "fy": OneEuro(FILTER_MIN_CUTOFF, FILTER_BETA, FILTER_D_CUTOFF)}
+        if t["pinch"]:
+            if t.pop("restart", False):
+                self.pad.frame([])   # lift; the raw fingers below begin a new touch
+            return contacts
+        fx = t["fx"](cx / RES, now) * RES
+        fy = t["fy"](cy / RES, now) * RES
+        ad, self.adelta = self.adelta, [0.0, 0.0]        # macOS's scroll since the last frame
+        if "vx" not in t:
+            t.update(vx=fx, vy=fy, px=fx, py=fy)
+        else:
+            dx, dy = fx - t["px"], fy - t["py"]
+            # Finger speed (mm/s) from the filter's own speed estimate.
+            v = math.hypot(t["fx"].dx or 0.0, t["fy"].dx or 0.0)
+            x = min(1.0, max(0.0, (v - BLEND_V0) / (BLEND_V1 - BLEND_V0)))
+            w = x * x * (3 - 2 * x)
+            raw = RAW_SCALE * self.cal * NATURAL
+            t["vx"] += (1 - w) * dx * raw + w * ad[0] * POINT_UNITS
+            t["vy"] += (1 - w) * dy * raw + w * ad[1] * POINT_UNITS
+            if 40 <= v < 120:          # calibration samples
+                self.cal_mm += math.hypot(dx, dy) / RES
+                self.cal_pts += math.hypot(ad[0], ad[1])
+            if DEBUG and now - self.logged > 0.3:
+                print(f"glide: {v:.0f} mm/s, macOS share {w:.2f}", flush=True)
+                self.logged = now
+            t.update(px=fx, py=fy)
+        vx = min(max(t["vx"], 2000), PAD_W - 2000)
+        vy = min(max(t["vy"], 2000), PAD_H - 2000)
+        return [(c[0], round(vx + o[0]), round(vy + o[1])) for c, o in zip(contacts, t["off"])]
+
+    def macos(self, dx, dy):
+        """macOS's scroll for the current touch (points, with its acceleration)."""
+        if self.held is not None:
+            # Arrived just after the lift (measured: ~10 % of a touch's steps):
+            # it belongs to the glide.
+            self.pending[0] += dx * POINT_UNITS * GLIDE
+            self.pending[1] += dy * POINT_UNITS * GLIDE
+            self.moved = time.monotonic()
+            return
+        self.adelta[0] += dx
+        self.adelta[1] += dy
+
+    def calibrate(self):
+        """After a touch: once enough medium-speed movement is collected, move
+        the slow-scrolling gain towards this Mac's points per mm / reference."""
+        if self.cal_mm < 20:
+            return
+        g = min(max(self.cal_pts / self.cal_mm / CAL_REF, 0.5), 2.0)
+        self.cal = 0.8 * self.cal + 0.2 * g
+        self.cal_pts = self.cal_mm = 0.0
+        try:
+            os.makedirs(os.path.dirname(CAL_FILE), exist_ok=True)
+            with open(CAL_FILE, "w") as f:
+                f.write(f"{self.cal:.4f}\n")
+        except OSError:
+            pass
+        if DEBUG:
+            print(f"glide: calibration {g:.2f} this touch, slow-scrolling gain {self.cal:.3f}", flush=True)
+
+    def pinch(self):
+        """macOS recognized a pinch: the current two-finger touch goes raw. libinput
+        never turns a running scroll into a pinch, so the touch starts afresh."""
+        if self.two is not None and not self.two["pinch"]:
+            self.two["pinch"] = True
+            self.two["restart"] = True
+            if DEBUG:
+                print("glide: pinch", flush=True)
+
+    def momentum(self, dx, dy):
+        if self.held is None:
+            self.touch.scroll(dx, dy)      # no fingers just lifted: Magic Mouse & co.
+            return
+        self.pending[0] += dx * POINT_UNITS * GLIDE
+        self.pending[1] += dy * POINT_UNITS * GLIDE
+        self.moved = time.monotonic()
+        self.drain()
+
+    def drain(self):
+        """Apply pending momentum in small, evenly timed steps."""
+        if self.held is None or not (self.pending[0] or self.pending[1]):
+            return
+        now = time.monotonic()
+        dt = now - self.tick
+        if dt < 0.002:
+            return
+        dt = min(dt, 0.02)
+        self.tick = now
+        px, py = self.pending
+        d = math.hypot(px, py)
+        if d < 0.25:
+            self.pending = [0.0, 0.0]
+            return
+        # The share of what is left that matches the time since the last tick:
+        # a continuous glide easing out exponentially (time constant GLIDE_TAU),
+        # the same movement in every display frame however the ticks fall.
+        step = min(d * (1 - math.exp(-dt / GLIDE_TAU)), MAX_RATE * dt) if d > 1 else d
+        k = step / d
+        sx, sy = px * k, py * k
+        if not all(500 <= c[1] + sx <= PAD_W - 500 and 500 <= c[2] + sy <= PAD_H - 500 for c in self.held):
+            self.pending = [0.0, 0.0]      # at the edge: stop here, lift after the hold
+            return
+        for c in self.held:
+            c[1] += sx
+            c[2] += sy
+        self.pending = [px - sx, py - sy]
+        self.pad.frame([(c[0], round(c[1]), round(c[2])) for c in self.held])
+
+    def idle(self):
+        self.touch.idle()
+        if self.held is None:
+            return
+        self.drain()
+        now = time.monotonic()
+        if (self.moved < self.lifted and now - self.lifted > self.MOMENTUM_WAIT) or \
+           (self.moved >= self.lifted and now - self.moved > HOLD):
+            self.pad.frame([])
+            self.held = None
+
+    def release(self):
+        self.held = None
+        self.two = None
+        self.contacts, self.hist = [], []
+
+
+TAP3_TIME = env_float("OMACVM_TAP3_TIME", 0.25)   # s from the first finger down to the last lift
+TAP3_MOVE = env_float("OMACVM_TAP3_MOVE", 1.5)    # mm each finger may move
+
+
+def make_buttons():
+    # libinput takes a device for a pointer only with relative axes and BTN_LEFT; only BTN_MIDDLE is sent.
+    return UInput({e.EV_KEY: [e.BTN_LEFT, e.BTN_MIDDLE], e.EV_REL: [e.REL_X, e.REL_Y]},
+                  name="OmacVM three-finger tap")
+
+
+class ThreeFingerTap:
+    """A short touch of exactly three fingers that do not move: a middle click.
+    The Mac's real fingers, so any finger count and timing can be told apart."""
+
+    def __init__(self):
+        self.ui = None           # main() sets it
+        self.start = None        # time of this touch's first frame
+        self.first = {}          # contact id -> where it came down
+        self.most = 0
+        self.moved = False
+
+    def frame(self, contacts, now=None):
+        now = time.monotonic() if now is None else now
+        if contacts:
+            if self.start is None:
+                self.start, self.first, self.most, self.moved = now, {}, 0, False
+            self.most = max(self.most, len(contacts))
+            for cid, x, y in contacts:
+                x0, y0 = self.first.setdefault(cid, (x, y))
+                if math.hypot(x - x0, y - y0) > TAP3_MOVE * RES:
+                    self.moved = True
+            return
+        if self.start is None:
+            return
+        tap = self.most == 3 and not self.moved and now - self.start <= TAP3_TIME
+        self.start = None
+        if tap and self.ui is not None:
+            for value in (1, 0):
+                self.ui.write(e.EV_KEY, e.BTN_MIDDLE, value)
+                self.ui.syn()
+
+    def cancel(self):
+        self.start = None
+
+
+TAP3 = ThreeFingerTap()
+
+
+def make_keyboard():
+    """A virtual keyboard for the Mac's Cmd shortcuts on UTM (sent as Super+key)."""
+    return UInput({e.EV_KEY: list(range(1, 249))}, name="OmacVM keyboard (Mac shortcuts)")
+
+
+class Keys:
+    def __init__(self, ui):
+        self.ui, self.down = ui, set()
+
+    def key(self, code, value):
+        if not 0 < code < 249:
+            return
+        self.ui.write(e.EV_KEY, code, value)
+        self.ui.syn()
+        if value:
+            self.down.add(code)
+        else:
+            self.down.discard(code)
+
+    def release(self):
+        for code in list(self.down):
+            self.key(code, 0)
+
+
+def desktop_user():
+    """OMACVM_GESTURES_USER, else the owner of the running Wayland session."""
+    if USER:
+        return USER
+    for sock in glob.glob("/run/user/*/wayland-*"):
+        if not sock.endswith(".lock"):
+            return pwd.getpwuid(os.stat(sock).st_uid).pw_name
+    return None
+
+
+def notify(text, ms=2500):
+    """A notification for the desktop user; False when there is none yet."""
+    user = desktop_user()
+    if not user:
+        return False
+    uid = subprocess.run(["id", "-u", user], capture_output=True, text=True).stdout.strip()
+    if not uid:
+        return False
+    env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS=f"unix:path=/run/user/{uid}/bus", XDG_RUNTIME_DIR=f"/run/user/{uid}")
+    subprocess.Popen(["runuser", "-u", user, "--", "notify-send", "-a", "Trackpad", "-t", str(ms), text],
+                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+
+# The escape combo is ⌃⌥ Esc since 3.0.0. The old ⌃⌥⌘ Esc still works through
+# 3.0.x (removed in a later version); whoever uses it is told the new one once
+# per VM, remembered here.
+ESC_HINT_FILE = "/var/lib/omacvm/escape-hint-shown"
+_esc_hint_shown = False
+
+
+def escape_notice(keys):
+    """"S esc [<keys>]": no notice (user, 2026-10-12: "never a notice"), but
+    for the old ⌃⌥⌘ Esc ("ctrl-opt-cmd" from a 3.0 helper) the new one is
+    named once per VM, while that combo still works."""
+    global _esc_hint_shown
+    if keys != "ctrl-opt-cmd" or _esc_hint_shown or os.path.exists(ESC_HINT_FILE):
+        return
+    if notify("New shortcut: ⌃⌥ Esc (⌃⌥⌘ Esc goes away in a later version)", 8000):
+        _esc_hint_shown = True
+        try:
+            os.makedirs(os.path.dirname(ESC_HINT_FILE), exist_ok=True)
+            with open(ESC_HINT_FILE, "w") as f:
+                f.write("shown\n")
+        except OSError as err:
+            print(f"omacvm-gestures: cannot remember the escape hint ({err}); shown again after a restart",
+                  file=sys.stderr, flush=True)
+
+
+# ---- Swipe out to macOS (#342) ----
+# Off until the Mac says "X on" (OmacVM's "Swipe out to macOS" setting on the
+# Mac, off by default). A swipe of three or more fingers (Hyprland's workspace
+# swipe; a Magic Mouse's comes as four or three) that goes past the first or
+# the last workspace of its display goes on to the macOS Space on that side.
+# Decided here at the lift, with the workspaces as they were when the swipe
+# began (the swipe itself may make a new one): the way the swipe goes is the
+# workspaces' way (gestures:workspace_swipe_invert), past the lowest
+# workspace = the Space on the left; on the right the first swipe from the
+# last workspace makes a new empty one (workspace_swipe_create_new, as
+# Hyprland does), a swipe past that empty one goes to the Space on the right.
+# The Mac moves (or, without a Space there, does nothing) as ⌃⌥ Esc does.
+# With a Mac that says "X on 2" the Mac decides and follows the
+# fingers with macOS's own Space swipe: this daemon only tells it where a
+# swipe would go, at once and on every workspace change ("E", from
+# Hyprland's event socket), and such a swipe never reaches this VM.
+# Sideways travel, share of the trackpad's width: Hyprland 0.56 (Omarchy's
+# settings) changes the workspace from about 0.11-0.13 (mini, 2026-10-12).
+SWIPE_OUT_MIN = env_float("OMACVM_SWIPE_OUT_MIN", 0.12)
+SWIPE_OUT_RATIO = 1.5                                      # ... and this much more sideways than up or down
+HYPR_WAIT = 0.3                                            # s to wait at the lift for the workspaces read at its start
+
+
+def hypr_socket():
+    """The desktop user's Hyprland socket (the newest instance), or None."""
+    user = desktop_user()
+    try:
+        uid = pwd.getpwnam(user).pw_uid if user else None
+    except KeyError:
+        uid = None
+    if uid is None:
+        return None
+    socks = glob.glob(f"/run/user/{uid}/hypr/*/.socket.sock")
+    return max(socks, key=lambda p: os.stat(os.path.dirname(p)).st_mtime) if socks else None
+
+
+def hypr(command, sock=None):
+    """One request to Hyprland's socket: its reply, JSON for j/ requests; None
+    when it does not answer."""
+    path = sock or hypr_socket()
+    if not path:
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+            c.settimeout(1)
+            c.connect(path)
+            c.sendall(command.encode())
+            chunks = []
+            while True:
+                chunk = c.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        reply = b"".join(chunks).decode(errors="replace")
+        return json.loads(reply) if command.startswith("j/") else reply
+    except (OSError, ValueError):
+        return None
+
+
+def hypr_option(name, default, sock=None):
+    """A bool option: Hyprland 0.56 answers {"bool": true}, older ones {"int": 1}."""
+    o = hypr(f"j/getoption {name}", sock)
+    if not isinstance(o, dict):
+        return default
+    v = o.get("bool", o.get("int"))
+    return v if isinstance(v, bool) else bool(v) if isinstance(v, int) else default
+
+
+def workspaces_now(sock=None):
+    """The focused display's workspaces, as the swipe sees them: {"monitor",
+    "active", "ids" (its normal workspaces), "empty" (the active one has no
+    windows), "special" (a special workspace is open there), "invert",
+    "create_new"}; None when Hyprland does not answer."""
+    sock = sock or hypr_socket()
+    monitors, spaces = hypr("j/monitors", sock), hypr("j/workspaces", sock)
+    if not isinstance(monitors, list) or not isinstance(spaces, list):
+        return None
+    m = next((m for m in monitors if isinstance(m, dict) and m.get("focused")), None)
+    if not m or not isinstance(m.get("activeWorkspace"), dict):
+        return None
+    active = m["activeWorkspace"].get("id")
+    ids = sorted(w["id"] for w in spaces if isinstance(w, dict) and w.get("monitor") == m.get("name")
+                 and isinstance(w.get("id"), int) and w["id"] > 0)
+    here = next((w for w in spaces if isinstance(w, dict) and w.get("id") == active), {})
+    return {"monitor": m.get("name"), "active": active, "ids": ids,
+            "empty": here.get("windows", 0) == 0,
+            "special": bool((m.get("specialWorkspace") or {}).get("id")),
+            "invert": hypr_option("gestures:workspace_swipe_invert", True, sock),
+            "create_new": hypr_option("gestures:workspace_swipe_create_new", True, sock)}
+
+
+def edge_sides(state):
+    """Where a swipe would go from the workspaces now, as (fingers to the
+    left, fingers to the right): "left"/"right" (out to that macOS Space) or
+    "-" (a workspace swipe here)."""
+    if not state or state.get("special") or not isinstance(state.get("active"), int):
+        return "-", "-"
+    active, ids = state["active"], state.get("ids") or [state["active"]]
+    prev = "left" if not any(i < active for i in ids) else "-"
+    nxt = "right" if not any(i > active for i in ids) and (state.get("empty") or not state.get("create_new", True)) else "-"
+    return (nxt, prev) if state.get("invert", True) else (prev, nxt)
+
+
+def swipe_out_side(state, dx, dy, width):
+    """Where a swipe of dx, dy (touchpad units) goes, given the workspaces at
+    its start: "left", "right" or None (a workspace swipe as usual, or no
+    swipe at all)."""
+    if not state or state.get("special") or not isinstance(state.get("active"), int):
+        return None
+    if abs(dx) < SWIPE_OUT_MIN * width or abs(dx) < SWIPE_OUT_RATIO * abs(dy):
+        return None
+    nxt = dx < 0 if state.get("invert", True) else dx > 0   # toward the next workspace
+    active, ids = state["active"], state.get("ids") or [state["active"]]
+    if not nxt:
+        return "left" if not any(i < active for i in ids) else None
+    if any(i > active for i in ids):
+        return None
+    return "right" if state.get("empty") or not state.get("create_new", True) else None
+
+
+# ---- which swipes switch workspaces: Hyprland's hl.gesture lines ----
+# Hyprland (Lua config, 0.55 on) offers no query for its gestures, so they are
+# read from the config files in the order Hyprland runs them: hyprland.lua and
+# what it requires or dofiles (~/.local/state, ~/.config, then Omarchy's own
+# files, as Omarchy's bootstrap sets package.path). Hyprland keeps the first
+# gesture for a finger count and way (a later one it would shadow is refused,
+# "unset" removes one) and, for a swipe, takes the first of those whose way
+# fits (horizontal, left or right, any "swipe"). A swipe out only follows a
+# count and way that switch workspaces there: with 3 fingers given to moving
+# focus and 4 to workspaces, only 4 fingers swipe out (user, 2026-10-14).
+# A count and way that any other sideways gesture uses, even one Hyprland
+# would refuse, stays the VM's too: a config can wrap hl.gesture and drop
+# lines (one drops OmacVM's own 3-finger line so 3 fingers snap windows), and
+# taking a swipe the user gave to something else is the worse mistake.
+LUA_STRING = r'"(?:[^"\\]|\\.)*"|' + r"'(?:[^'\\]|\\.)*'"
+
+
+def lua_code(text):
+    """Lua source without its comments (strings kept)."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'":
+            m = re.compile(LUA_STRING).match(text, i)
+            j = m.end() if m else n
+            out.append(text[i:j])
+            i = j
+        elif text.startswith("--", i):
+            m = re.compile(r"--\[(=*)\[").match(text, i)
+            if m:
+                j = text.find("]" + m[1] + "]", m.end())
+                i = n if j < 0 else j + len(m[1]) + 2
+            else:
+                j = text.find("\n", i)
+                i = n if j < 0 else j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def table_at(code, i):
+    """The {...} table that starts at code[i] (strings skipped), or None."""
+    depth, j, n = 0, i, len(code)
+    while j < n:
+        c = code[j]
+        if c in "\"'":
+            m = re.compile(LUA_STRING).match(code, j)
+            j = m.end() if m else n
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return code[i:j + 1]
+        j += 1
+    return None
+
+
+def gesture_fields(table):
+    """fingers, direction, action ("other" for a function), mods? of one
+    hl.gesture table: its own fields only (not those of a function inside)."""
+    top, depth, i = [], 0, 0
+    while i < len(table):   # the table's own level: depth 1 (strings skipped)
+        c = table[i]
+        if c in "\"'":
+            m = re.compile(LUA_STRING).match(table, i)
+            j = m.end() if m else len(table)
+            top.append(table[i:j] if depth == 1 else " " * (j - i))
+            i = j
+            continue
+        depth += c in "{([" and 1 or 0
+        top.append(c if depth == 1 else " ")
+        depth -= c in "})]" and 1 or 0
+        i += 1
+    top = "".join(top)
+
+    def field(name, pattern):
+        m = re.search(r"(?<![\w.])" + name + r"\s*=\s*" + pattern, top)
+        return m[1] if m else None
+    fingers = field("fingers", r"(\d+)\b")
+    direction = field("direction", r"[\"']([A-Za-z]+)[\"']")
+    action = field("action", r"[\"']([A-Za-z_]+)[\"']")
+    if action is None and re.search(r"(?<![\w.])action\s*=", top):
+        action = "other"
+    return (int(fingers) if fingers else None, (direction or "").lower(), action,
+            bool(re.search(r"(?<![\w.])mods\s*=", top)))
+
+
+def hypr_lua_files(home, omarchy):
+    """(path, code) of Hyprland's config in the order it runs, following
+    require("a.b") and dofile("...") with a plain string."""
+    roots = [f"{home}/.local/state", f"{home}/.config"] + ([omarchy] if omarchy else [])
+    seen, order = set(), []
+
+    def visit(path):
+        real = os.path.realpath(path)
+        if real in seen or not os.path.isfile(real) or len(seen) > 200:
+            return
+        seen.add(real)
+        try:
+            with open(real, errors="replace") as f:
+                code = lua_code(f.read())
+        except OSError:
+            return
+        pos = 0
+        for m in re.finditer(r"""\b(require|dofile)\s*\(?\s*(["'])([^"']+)\2""", code):
+            order.append((real, code[pos:m.start()]))
+            pos = m.end()
+            name = m[3]
+            if m[1] == "dofile":
+                visit(name.replace("~", home, 1))
+            else:
+                for r in roots:
+                    p = f"{r}/{name.replace('.', '/')}.lua"
+                    if os.path.isfile(p):
+                        visit(p)
+                        break
+        order.append((real, code[pos:]))
+
+    visit(f"{home}/.config/hypr/hyprland.lua")
+    return order
+
+
+# Hyprland's names for a way (dirForString) and the axis each lies on.
+WAY_NAMES = {"swipe": "swipe", "left": "left", "l": "left", "right": "right", "r": "right", "up": "up", "u": "up",
+             "top": "up", "t": "up", "down": "down", "d": "down", "bottom": "down", "b": "down",
+             "horizontal": "horizontal", "horiz": "horizontal", "vertical": "vertical", "vert": "vertical",
+             "pinch": "pinch", "pinchin": "pinchin", "zoomin": "pinchin", "pinchout": "pinchout", "zoomout": "pinchout"}
+WAY_AXIS = {"left": "horizontal", "right": "horizontal", "horizontal": "horizontal", "up": "vertical",
+            "down": "vertical", "vertical": "vertical", "swipe": "swipe", "pinch": "pinch", "pinchin": "pinch",
+            "pinchout": "pinch"}
+
+
+def omarchy_dir(home):
+    """Omarchy's own files (omarchy-mac's or the package's), or None."""
+    return next((d for d in (f"{home}/.local/share/omarchy", "/usr/share/omarchy")
+                 if os.path.isfile(f"{d}/default/hypr/bootstrap.lua")), None)
+
+
+def hypr_gestures(parts):
+    """(fingers, way, action, mods) of each hl.gesture table in these parts."""
+    for _, code in parts:
+        for m in re.finditer(r"\bhl\s*\.\s*gesture\s*\(\s*(?=\{)", code):
+            table = table_at(code, m.end())
+            if table:
+                fingers, direction, action, mods = gesture_fields(table)
+                yield fingers, WAY_NAMES.get(direction), action, mods
+
+
+def sideways_counts(home):
+    """For install.sh: the finger counts a sideways gesture (any action, no
+    key held) already uses, in Hyprland's config or any file in
+    ~/.config/hypr; None when a count is not written out."""
+    parts = hypr_lua_files(home, omarchy_dir(home))
+    seen = {path for path, _ in parts}
+    for path in sorted(glob.glob(f"{home}/.config/hypr/*.lua")):
+        if os.path.realpath(path) not in seen:
+            try:
+                with open(path, errors="replace") as f:
+                    parts.append((path, lua_code(f.read())))
+            except OSError:
+                pass
+    counts = set()
+    for fingers, way, action, mods in hypr_gestures(parts):
+        if mods or action == "unset" or way not in ("horizontal", "left", "right", "swipe"):
+            continue
+        if fingers is None:
+            return None
+        counts.add(fingers)
+    return counts
+
+
+def workspace_swipes(home=None, omarchy=None):
+    """Which swipes switch workspaces: {fingers: "l", "r" or "lr"} (fingers
+    going left / right), {} for none, None when Hyprland's config cannot be
+    read (or one gesture's fingers are not a plain number)."""
+    if home is None:
+        try:
+            home = pwd.getpwnam(desktop_user() or "").pw_dir
+        except KeyError:
+            return None
+    if omarchy is None:
+        omarchy = omarchy_dir(home)
+    parts = hypr_lua_files(home, omarchy)
+    if not parts:
+        return None
+    gestures = []   # [fingers, direction, action, mods] as Hyprland keeps them
+    others = []     # [fingers, direction, mods] of every gesture for something else
+    for fingers, direction, action, mods in hypr_gestures(parts):
+        if fingers is None:
+            if action in ("workspace", None, "other"):
+                return None   # a count that is not written out: cannot tell
+            continue
+        if not direction:
+            continue
+        if action == "unset":
+            gestures = [g for g in gestures if not (g[0] == fingers and g[1] == direction and g[3] == mods)]
+            others = [o for o in others if o != [fingers, direction, mods]]
+            continue
+        if action != "workspace":
+            others.append([fingers, direction, mods])
+        a = WAY_AXIS[direction]
+        if any(g[0] == fingers and g[3] == mods and
+               (g[1] == a or g[1] == direction or (a in ("horizontal", "vertical") and g[1] == "swipe"))
+               for g in gestures):
+            continue   # shadowed: Hyprland refuses it
+        gestures.append([fingers, direction, action, mods])
+    ways = {}
+    for n in sorted({g[0] for g in gestures}):
+        for way, word in (("l", "left"), ("r", "right")):
+            g = next((g for g in gestures if g[0] == n and not g[3] and g[1] in ("horizontal", word, "swipe")), None)
+            if g and g[2] == "workspace" and not any(
+                    o[0] == n and not o[2] and o[1] in ("horizontal", word, "swipe") for o in others):
+                ways[n] = ways.get(n, "") + way
+    return ways
+
+
+def swipes_line(ways):
+    """The "G" line: "G 4lr", "G 3l 4lr", "G -" for none."""
+    return "G " + (" ".join(f"{n}{w}" for n, w in sorted(ways.items())) or "-") + "\n"
+
+
+HYPR_EVENTS = {b"workspace", b"workspacev2", b"focusedmon", b"focusedmonv2", b"createworkspace", b"createworkspacev2",
+               b"destroyworkspace", b"destroyworkspacev2", b"moveworkspace", b"moveworkspacev2", b"renameworkspace",
+               b"activespecial", b"activespecialv2", b"openwindow", b"closewindow", b"movewindow", b"movewindowv2",
+               b"monitoradded", b"monitoraddedv2", b"monitorremoved", b"monitorremovedv2", b"configreloaded"}
+EDGE_QUIET = 0.03        # s: a burst of Hyprland's events is read as one change ...
+EDGE_BURST = 0.2         # ... for at most this long
+EDGE_RECHECK = 30.0      # s: looked at again without an event (a missed one)
+
+
+class SwipeOut:
+    def __init__(self):
+        self.on = False
+        self.version = 1         # 2: the Mac takes the swipe ("X on 2"), this daemon only says where it goes
+        self.send = None         # run() sets it: a line to the Mac (any thread)
+        self.start = self.end = None
+        self.box = {}            # the workspaces at this swipe's start ("state"; a thread reads them)
+        self.reader = None
+        self.said = None         # the last "E" line sent on this connection
+        self.gsaid = None        # the last "G" line sent on this connection
+        self.fingers = 0         # the most fingers of this swipe (for a Mac from 3.1.0-3.1.5)
+        self.waker = None        # (read end, write end): wakes the watcher at once
+        self.watcher = None
+
+    def set(self, on, version=1):
+        if on != self.on or (on and version != self.version):
+            print(f"omacvm-gestures: swipe out to macOS {'on' if on else 'off'}"
+                  f"{' (the Mac follows the fingers)' if on and version >= 2 else ''}", flush=True)
+        self.on, self.version = on, version
+        self.cancel()
+        self.said = self.gsaid = None
+        if on and version >= 2:
+            start = self.watcher is None
+            if start:
+                self.waker = socket.socketpair()
+                self.waker[0].setblocking(False)
+                self.watcher = threading.Thread(target=self.watch, daemon=True)
+            try:
+                self.waker[1].send(b"!")
+            except OSError:
+                pass
+            # A new watcher only after the wake-up: its first look takes it,
+            # so it says where swipes go once, not twice.
+            if start:
+                self.watcher.start()
+
+    def tell(self, state, ways=None):
+        """Where swipes go now and which swipes switch workspaces (G, when
+        Hyprland's config could be read), to the Mac: only what changed. A
+        Mac helper from 3.1.6-3.1.10 skips G and takes any 3+-finger swipe."""
+        send = self.send
+        if not send or not (self.on and self.version >= 2):
+            return
+        line = "E %s %s\n" % edge_sides(state)
+        gline = swipes_line(ways) if ways is not None else None
+        try:
+            if gline and gline != self.gsaid:
+                send(gline.encode())
+                self.gsaid = gline
+            if line != self.said:
+                send(line.encode())
+                self.said = line
+        except OSError:
+            pass   # the connection is going: run() connects again and the Mac asks anew
+
+    def woken(self, timeout):
+        """Waits up to timeout s for a wake-up (set()); True if one came."""
+        r, _, _ = select.select([self.waker[0]], [], [], timeout)
+        if not r:
+            return False
+        try:
+            while self.waker[0].recv(64):
+                pass
+        except OSError:
+            pass
+        return True
+
+    def watch(self):
+        """Hyprland's event socket for good (Hyprland may start, stop and
+        start again): every workspace change tells the Mac where swipes go."""
+        while True:
+            if not (self.on and self.version >= 2):
+                self.woken(None)
+                continue
+            sock = hypr_socket()
+            if not sock:
+                self.tell(None)
+                self.woken(2)
+                continue
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as ev:
+                    ev.connect(os.path.join(os.path.dirname(sock), ".socket2.sock"))
+                    self.woken(0)   # events() says it at once anyway
+                    self.events(ev, sock)
+            except OSError:
+                pass
+            self.woken(1)
+
+    def events(self, ev, sock):
+        """Until Hyprland goes: tell the Mac at once, after each burst of
+        workspace events, after a wake-up (a new connection) and now and
+        then without one."""
+        buf, dirty, last = b"", True, 0.0
+        ways = workspace_swipes()   # Hyprland's gestures: read now and after each config reload
+        while self.on and self.version >= 2:
+            now = time.monotonic()
+            if dirty or now - last >= EDGE_RECHECK:
+                self.tell(workspaces_now(sock), ways)
+                dirty, last = False, now
+            r, _, _ = select.select([ev, self.waker[0]], [], [], EDGE_RECHECK)
+            if self.waker[0] in r:
+                self.woken(0)
+                dirty, self.said, self.gsaid = True, None, None
+            if ev not in r:
+                continue
+            data = ev.recv(65536)
+            if not data:
+                return   # Hyprland went away
+            buf += data
+            *lines, buf = buf.split(b"\n")
+            names = [line.partition(b">>")[0] for line in lines]
+            if not any(n in HYPR_EVENTS for n in names):
+                continue
+            reload = b"configreloaded" in names
+            # The rest of the burst (a workspace change is several events):
+            # read until it is quiet, at most EDGE_BURST.
+            until = time.monotonic() + EDGE_BURST
+            while time.monotonic() < until:
+                r, _, _ = select.select([ev], [], [], EDGE_QUIET)
+                if not r:
+                    break
+                more = ev.recv(65536)
+                if not more:
+                    return
+                reload = reload or b"configreloaded>>" in buf + more
+                buf = (buf + more).rpartition(b"\n")[2]
+            if reload:
+                ways = workspace_swipes()
+            dirty = True
+
+    def cancel(self):
+        self.start = self.end = None
+
+    @staticmethod
+    def _read(box):
+        box["state"] = workspaces_now()
+        box["ways"] = workspace_swipes()
+
+    def frame(self, contacts):
+        if not self.on or self.version >= 2:
+            return
+        if len(contacts) >= 3:
+            c = (sum(x for _, x, _ in contacts) / len(contacts), sum(y for _, _, y in contacts) / len(contacts))
+            if self.start is None:
+                self.start, self.box, self.fingers = c, {}, 0
+                self.reader = threading.Thread(target=self._read, args=(self.box,), daemon=True)
+                self.reader.start()
+            self.end = c
+            self.fingers = max(self.fingers, len(contacts))
+            return
+        if self.start is not None:
+            start, end = self.start, self.end
+            self.cancel()
+            self.lift(end[0] - start[0], end[1] - start[1])
+
+    def lift(self, dx, dy):
+        if abs(dx) < SWIPE_OUT_MIN * W:
+            return   # no swipe: no need to wait for the workspaces
+        if self.reader:
+            self.reader.join(HYPR_WAIT)
+        state = self.box.get("state")
+        side = swipe_out_side(state, dx, dy, W)
+        if not side or not self.send:
+            return
+        ways = self.box.get("ways")
+        if ways is not None and ("l" if dx < 0 else "r") not in ways.get(self.fingers, ""):
+            return   # that many fingers do something else here (Hyprland's gestures)
+        print(f"omacvm-gestures: swipe out to the {side} (workspace {state['active']} of {state['ids']} "
+              f"on {state['monitor']})", flush=True)
+        self.send(f"X {side}\n".encode())
+        threading.Thread(target=self.settle, args=(state,), daemon=True).start()
+
+    @staticmethod
+    def settle(state, wait=0.4):
+        """Hyprland's own swipe may have gone on to a new empty workspace
+        meanwhile (past the last one): back to the one the swipe began on,
+        so the VM is as it was when the person comes back."""
+        time.sleep(wait)
+        now = workspaces_now()
+        if now and now["monitor"] == state["monitor"] and now["active"] != state["active"] and now["empty"]:
+            hypr(f'dispatch hl.dsp.focus({{ workspace = "{state["active"]}" }})')
+
+
+SWIPE = SwipeOut()
+
+
+def bridge_token():
+    try:
+        home = pwd.getpwnam(os.environ.get("OMACVM_USER") or desktop_user() or "").pw_dir
+        with open(f"{home}/.config/omacvm-bridge/token") as f:
+            return f.read().strip()
+    except (KeyError, OSError, TypeError):
+        return ""
+
+
+ROUTES, SYS_NET = "/proc/net/route", "/sys/class/net"
+
+
+def default_gateway():
+    """The IPv4 default gateway the VM uses, from /proc/net/route ("" without
+    one): the lowest metric among default routes whose network card has a
+    link. When the app switches networks it takes one card's link down; that
+    card's route can stay listed (first) for seconds after."""
+    best = None
+    try:
+        with open(ROUTES) as f:
+            for line in f.readlines()[1:]:
+                p = line.split()
+                if len(p) < 7 or p[1] != "00000000" or int(p[3], 16) & 3 != 3:   # RTF_UP | RTF_GATEWAY
+                    continue
+                try:
+                    with open(f"{SYS_NET}/{p[0]}/carrier") as c:
+                        if c.read().strip() != "1":
+                            continue
+                except OSError:
+                    pass                                 # no carrier to read: count it
+                if best is None or int(p[6]) < best[0]:
+                    best = (int(p[6]), socket.inet_ntoa(struct.pack("<I", int(p[2], 16))))
+    except (OSError, ValueError):
+        pass
+    return best[1] if best else ""
+
+
+def mac_host():
+    """(where to connect, the Mac address the helper must have accepted on: both
+    proofs name it). OmacVM.app: QEMU's user network's 10.0.2.2 is the Mac's
+    127.0.0.1; on its fast network (vmnet, the app picks it at each start) the
+    Mac is the gateway 192.168.77.1."""
+    if os.environ.get("OMACVM_VM_TYPE") != "app":
+        return HOST, HOST
+    if not os.environ.get("OMACVM_GESTURES_HOST") and default_gateway() == "192.168.77.1":
+        return "192.168.77.1", "192.168.77.1"
+    return HOST, "127.0.0.1"
+
+
+# A connection whose path went away (the app switched the VM between its fast
+# network and the user network, or the Mac slept) is noticed by TCP keepalive
+# in about 5 + 2 * 3 s; an idle one also looks every RECHECK seconds whether the
+# way to the Mac changed (a new default gateway) and connects again at once.
+KEEPALIVE = (5, 2, 3)   # idle seconds, seconds between probes, probes
+RECHECK = 2.0
+# Without the Mac's helper (not running yet, waiting for its permissions, an
+# update): a try every 2 s for the first 30 s, so a restart or a grant is
+# picked up at once, then every 10 s, and one log line per outage.
+RETRY_FIRST = 2.0
+RETRY_SLOW = 10.0
+RETRY_FAST_FOR = 30.0
+
+
+class Moved(ConnectionError):
+    """The way to the Mac changed: connect again now."""
+
+
+def keepalive(s):
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    # Linux: TCP_KEEPIDLE; macOS (the offline test): TCP_KEEPALIVE.
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for opt, v in ((idle, KEEPALIVE[0]), (getattr(socket, "TCP_KEEPINTVL", None), KEEPALIVE[1]),
+                   (getattr(socket, "TCP_KEEPCNT", None), KEEPALIVE[2])):
+        if opt is not None:
+            s.setsockopt(socket.IPPROTO_TCP, opt, v)
+
+
+def proof(tok, who, addr, gn, mn):
+    """HMAC-SHA256(token, "omacvm-gestures <who> <Mac address> <guest nonce> <mac nonce>"), hex.
+    With the address, a listener on 127.0.0.1 cannot pass on a proof it got from
+    the helper on 10.211.55.2."""
+    msg = f"omacvm-gestures {who} {addr} {gn} {mn}"
+    return hmac.new(tok.encode(), msg.encode(), hashlib.sha256).hexdigest().encode()
+
+
+def run(pad, keys, glide):
+    # Any VM on the Mac's VM networks can reach the Mac's listener, and on
+    # 127.0.0.1 (OmacVM.app) any program on the Mac could listen in its place:
+    # both sides prove they know the Bridge's token, the Mac first.
+    tok = bridge_token()
+    if not tok:
+        raise ConnectionError("no Bridge token yet (omacvm apply puts it in ~/.config/omacvm-bridge/token)")
+    host, addr = mac_host()
+    with socket.create_connection((host, PORT), timeout=5) as s:
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        keepalive(s)
+        gn = secrets.token_hex(16)
+        s.sendall(f"C {gn}\n".encode())
+        buf = b""
+        while b"\n" not in buf and len(buf) < 4096:
+            data = s.recv(4096)
+            if not data:
+                raise ConnectionError(f"{host}:{PORT} closed the connection (OmacVM Gestures on the Mac "
+                                      "from before the handshake? omacvm update)")
+            buf += data
+        line, _, buf = buf.partition(b"\n")
+        m = re.fullmatch(rb"M ([0-9a-f]{32}) ([0-9a-f]{64})", line)
+        if not m or not hmac.compare_digest(m[2], proof(tok, "mac", addr, gn, m[1].decode())):
+            raise ConnectionError(f"{host}:{PORT} did not prove it knows the Bridge's token: not talking to it")
+        s.sendall(f"R {int(GESTURES)} {int(GLIDE_ON)} {proof(tok, 'vm', addr, gn, m[1].decode()).decode()}"
+                  f"{' ' + NAME if NAME else ''}\n".encode())
+        SWIPE.set(False)      # until this Mac says "X on"
+        lock = threading.Lock()
+
+        def send(data, s=s):
+            with lock:
+                s.sendall(data)
+        SWIPE.send = send
+        CONNECTED.set()
+        print(f"omacvm-gestures: connected to {host}:{PORT} (gestures {'on' if GESTURES else 'off'}, "
+              f"scroll momentum {'on' if GLIDE_ON else 'off'})", flush=True)
+        tick = -1          # forces the first settimeout (create_connection left 5 s)
+        recheck = time.monotonic() + RECHECK
+        while True:
+            # A 2 ms tick (the glide's clock) only while a frame or a held
+            # touch waits; otherwise wake every RECHECK seconds (one look at
+            # the routing table), so an idle VM is hardly woken.
+            want = 0.002 if (pad.pending is not None or glide.held is not None or glide.touch.down) else RECHECK
+            if want != tick:
+                s.settimeout(want)
+                tick = want
+            try:
+                data = s.recv(65536)
+            except socket.timeout:
+                data = None
+            pad.flush()
+            glide.idle()
+            now = time.monotonic()
+            if now >= recheck:
+                recheck = now + RECHECK
+                if mac_host() != (host, addr):
+                    raise Moved(f"the way to the Mac changed (now {mac_host()[0]}): connecting again")
+            if data is None:
+                continue
+            if not data:
+                raise ConnectionError("helper closed the connection")
+            buf += data
+            *lines, buf = buf.split(b"\n")
+            for line in lines:
+                p = line.split()
+                if not p:
+                    continue
+                try:
+                    handle(p, pad, keys, glide)
+                except (ValueError, IndexError):
+                    print(f"omacvm-gestures: skipped a malformed line: {line[:80]!r}", file=sys.stderr, flush=True)
+
+
+def handle(p, pad, keys, glide):
+    if p[0] == b"F":
+        n = int(p[1])
+        contacts = []
+        for i in range(n):
+            cid, x, y = int(p[2 + 4 * i]), float(p[3 + 4 * i]), float(p[4 + 4 * i])
+            contacts.append((cid, OFF_X + round(min(max(x, 0.0), 1.0) * W), OFF_Y + round(min(max(y, 0.0), 1.0) * H)))
+        SWIPE.frame(contacts)
+        TAP3.frame(contacts)
+        if GLIDE_ON:
+            glide.frame(contacts)
+        else:
+            pad.frame(contacts)
+    elif p[0] == b"O":
+        set_mac(int(p[1]), int(p[2]), int(p[3]))
+    elif p[0] == b"A":
+        glide.macos(float(p[1]), float(p[2]))
+    elif p[0] == b"W":
+        glide.momentum(float(p[1]), float(p[2]))
+    elif p[0] == b"P":
+        glide.pinch()
+    elif p[0] == b"K":
+        keys.key(int(p[1]), int(p[2]))
+    elif p[0] == b"S":
+        state = p[1].decode()
+        print(f"omacvm-gestures: capture {state}", flush=True)
+        if state != "on":
+            SWIPE.cancel()
+            TAP3.cancel()
+            glide.release()
+            pad.release()
+            keys.release()
+        if state == "esc":
+            escape_notice(p[2].decode() if len(p) > 2 else None)
+    elif p[0] == b"X":
+        SWIPE.set(p[1] == b"on", int(p[2]) if len(p) > 2 and p[2].isdigit() else 1)
+
+
+def main():
+    ui = make_device()
+    pad = Touchpad(ui)
+    keys = Keys(make_keyboard())
+    glide = Glide(pad)
+    TAP3.ui = make_buttons()
+    print(f"omacvm-gestures: virtual touchpad {ui.device.path}"
+          f"{', macOS-native scroll momentum on' if GLIDE_ON else ''}", flush=True)
+    serve(pad, keys, glide)
+
+
+# Set by run() once the Mac's helper took the connection: an outage then
+# starts again from the first, quick tries.
+CONNECTED = threading.Event()
+
+
+def retry_wait(outage):
+    """Seconds before the next try, `outage` seconds into an outage."""
+    return RETRY_FIRST if outage < RETRY_FAST_FOR else RETRY_SLOW
+
+
+def serve(pad, keys, glide, run=run, sleep=time.sleep, clock=time.monotonic):
+    """run() for good: after a lost connection let go of what is held and
+    connect again, at once when the way to the Mac changed, else after
+    retry_wait(). One log line per outage (the next comes with "connected")."""
+    since = None
+    while True:
+        CONNECTED.clear()
+        try:
+            run(pad, keys, glide)
+        except (OSError, ConnectionError) as err:
+            glide.release()
+            pad.release()
+            keys.release()
+            if CONNECTED.is_set():
+                since = None
+            if isinstance(err, Moved):
+                print(f"omacvm-gestures: {err}", file=sys.stderr, flush=True)
+                continue
+            if since is None:
+                since = clock()
+                print(f"omacvm-gestures: {err}; trying again (every {RETRY_FIRST:g} s, "
+                      f"after {RETRY_FAST_FOR:g} s every {RETRY_SLOW:g} s)", file=sys.stderr, flush=True)
+            sleep(retry_wait(clock() - since))
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--sideways"] and len(sys.argv) == 3:
+        # install.sh: which finger counts a sideways gesture already uses ("?": cannot tell).
+        counts = sideways_counts(sys.argv[2])
+        print("?" if counts is None else " ".join(map(str, sorted(counts))))
+    else:
+        main()

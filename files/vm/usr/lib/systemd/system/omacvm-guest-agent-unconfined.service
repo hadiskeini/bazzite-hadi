@@ -1,0 +1,12 @@
+# OmacVM.app runs omacvm-audio-latency through the guest agent; SELinux lets the agent run programs
+# with that label only with this boolean on. Set at boot: the image cannot change the policy store.
+[Unit]
+Description=Let the QEMU guest agent run OmacVM's programs
+Before=qemu-guest-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/setsebool virt_qemu_ga_run_unconfined on
+
+[Install]
+WantedBy=multi-user.target
