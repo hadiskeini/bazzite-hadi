@@ -59,6 +59,9 @@ modules:
       - mem_sleep_default=s2idle           # RX 9070 SMU resume hang on S3
       - video=DP-3:3840x2160@144e          # 144 Hz console and splash on the 4K panel
       - amdgpu.ppfeaturemask=0xfff7ffff    # LACT overdrive
+      - nowatchdog                         # no soft/hard lockup watchdog timers: a hung desktop gets a reboot anyway
+      - nmi_watchdog=0                     # frees the PMU counter the NMI watchdog holds
+      - tsc=reliable                       # no clocksource watchdog (cross-CPU TSC reads); single-socket Zen 3
 
   - type: gschema-overrides
     include:
@@ -78,6 +81,14 @@ modules:
         - var-lib-nfs-rpc_pipefs.mount
         - rpc-statd-notify.service
         - gssproxy.service
+        - cups.service                     # no printer
+        - cups.socket
+        - cups.path
+        - geoclue.service                  # no location user (Dux Shell has auto location off)
+        - unbound-anchor.timer             # unbound is not installed
+        - raid-check.timer                 # no md RAID
     user:
       enabled:
         - scyroxd.service
+      masked:
+        - mpris-proxy.service              # Bluetooth media control; no Bluetooth adapter

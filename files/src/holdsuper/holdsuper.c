@@ -54,9 +54,9 @@ static bool overview = false;     // let a lone hold-and-release open Activities
 static int src = -1;              // grabbed source device, -1 while passing through
 static int clone_fd = -1, kbd_fd = -1;
 static unsigned short clone_vendor, clone_product;
-static int timer_fd = -1, listen_fd = -1, client_fd = -1;
-static char client_buf[256];
-static size_t client_len;
+static int timer_fd = -1, listen_fd = -1, client_fd = -1, pending_fd = -1;
+static char client_buf[256], pending_buf[256];
+static size_t client_len, pending_len;
 
 static enum { IDLE, PENDING, HELD } state = IDLE;
 static bool used;                 // another button/wheel happened during the hold
@@ -358,6 +358,18 @@ static void handle_line(char *line) {
     dbg("cmd: %s", line);
 }
 
+static void handle_client_buf(void) {
+    char *start = client_buf, *nl;
+    while ((nl = strchr(start, '\n'))) {
+        *nl = 0;
+        handle_line(start);
+        start = nl + 1;
+    }
+    client_len = strlen(start);
+    memmove(client_buf, start, client_len + 1);
+    if (client_len == sizeof client_buf - 1) client_len = 0;   // garbage line, drop it
+}
+
 static void drop_client(void) {
     if (client_fd < 0) return;
     close(client_fd);
@@ -376,15 +388,43 @@ static void read_client(void) {
     }
     client_len += (size_t)n;
     client_buf[client_len] = 0;
-    char *start = client_buf, *nl;
-    while ((nl = strchr(start, '\n'))) {
-        *nl = 0;
-        handle_line(start);
-        start = nl + 1;
+    handle_client_buf();
+}
+
+static bool is_front_end_line(const char *line) {
+    return !strncmp(line, "pass ", 5) || !strncmp(line, "hold ", 5) || !strncmp(line, "overview ", 9);
+}
+
+// A new connection replaces the front end only if its first line is a front-end command. A probe (niri-at-pointer
+// sends "ping") must not drop the front end: without one, holdsuper releases the mouse.
+static void read_pending(void) {
+    ssize_t n = read(pending_fd, pending_buf + pending_len, sizeof pending_buf - 1 - pending_len);
+    if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
+    if (n > 0) {
+        pending_len += (size_t)n;
+        pending_buf[pending_len] = 0;
+        char *nl = strchr(pending_buf, '\n');
+        if (!nl && pending_len < sizeof pending_buf - 1) return;
+        if (nl) *nl = 0;
+        bool front_end = nl && is_front_end_line(pending_buf);
+        if (nl) *nl = '\n';
+        if (front_end) {
+            if (client_fd >= 0) close(client_fd);
+            client_fd = pending_fd;
+            memcpy(client_buf, pending_buf, pending_len + 1);
+            client_len = pending_len;
+            pending_fd = -1;
+            pending_len = 0;
+            logmsg("extension connected");
+            handle_client_buf();
+            return;
+        }
+        if (nl) *nl = 0;
+        logmsg("not a front end, closed: %s", pending_buf);
     }
-    client_len = strlen(start);
-    memmove(client_buf, start, client_len + 1);
-    if (client_len == sizeof client_buf - 1) client_len = 0;   // garbage line, drop it
+    close(pending_fd);
+    pending_fd = -1;
+    pending_len = 0;
 }
 
 static int make_listener(void) {
@@ -442,12 +482,13 @@ int main(int argc, char **argv) {
     logmsg("holdsuper ready: button %d, waiting for the extension", button);
 
     while (!quit) {
-        struct pollfd pf[4];
-        int n = 0, i_src = -1, i_client = -1;
+        struct pollfd pf[5];
+        int n = 0, i_src = -1, i_client = -1, i_pending = -1;
         pf[n++] = (struct pollfd){.fd = listen_fd, .events = POLLIN};
         pf[n++] = (struct pollfd){.fd = timer_fd, .events = POLLIN};
         if (src >= 0) { i_src = n; pf[n++] = (struct pollfd){.fd = src, .events = POLLIN}; }
         if (client_fd >= 0) { i_client = n; pf[n++] = (struct pollfd){.fd = client_fd, .events = POLLIN}; }
+        if (pending_fd >= 0) { i_pending = n; pf[n++] = (struct pollfd){.fd = pending_fd, .events = POLLIN}; }
 
         int r = poll(pf, n, want_grab_retry ? 1000 : -1);
         if (r < 0) { if (errno == EINTR) continue; logmsg("poll: %s", strerror(errno)); break; }
@@ -459,12 +500,13 @@ int main(int argc, char **argv) {
         }
         if (i_src >= 0 && pf[i_src].revents) read_source();
         if (i_client >= 0 && pf[i_client].revents) read_client();
+        if (i_pending >= 0 && pf[i_pending].revents) read_pending();
         if (pf[0].revents & POLLIN) {
             int c = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (c >= 0) {
-                if (client_fd >= 0) { close(client_fd); client_len = 0; }   // newest extension wins
-                client_fd = c;
-                logmsg("extension connected");
+                if (pending_fd >= 0) close(pending_fd);
+                pending_fd = c;
+                pending_len = 0;
             }
         }
     }

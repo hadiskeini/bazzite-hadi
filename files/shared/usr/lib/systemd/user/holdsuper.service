@@ -4,8 +4,10 @@
 [Unit]
 Description=holdsuper (mouse button tap/hold to Super)
 After=default.target
-# Enabled globally, so root (every sudo starts a user manager) and GDM would get a second copy.
-ConditionUser=!@system
+# Enabled globally: root (every sudo starts a user manager) and the GDM greeter (uid above SYS_UID_MAX) would get a
+# copy. Only the desktop user has the device groups.
+ConditionGroup=input
+ConditionGroup=uinput
 
 [Service]
 Type=simple
