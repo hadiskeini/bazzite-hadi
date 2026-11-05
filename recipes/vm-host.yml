@@ -18,6 +18,8 @@ modules:
         - gcc                  # the C linker for cargo (sys in ~/home); came with akmods before the prebuilt module
 
   # Fedora has no Ghostty. Terra is on only for this module: its dependencies (gtk4-layer-shell) come from Fedora.
+  # Ghostty needs OpenGL 4.3 (virgl gives 4.1): libEGL_omacvm (stage omacvm-gpu) gives it Zink with OmacVM's switch,
+  # else llvmpipe. Do not set LIBGL_ALWAYS_SOFTWARE or a driver variable for it: the library then keeps out.
   - type: dnf
     repos:
       files:
@@ -26,12 +28,6 @@ modules:
     install:
       packages:
         - ghostty
-
-  # Ghostty draws only with OpenGL 4.3. virgl gives 4.1 without storage buffers, Zink only 2.1, so llvmpipe.
-  # Every launcher (desktop file, D-Bus, systemd unit) runs /usr/bin/ghostty: the wrapper covers them all.
-  - type: script
-    snippets:
-      - mv /usr/bin/ghostty /usr/libexec/ghostty && printf '#!/bin/sh\nLIBGL_ALWAYS_SOFTWARE=1 exec /usr/libexec/ghostty "$@"\n' > /usr/bin/ghostty && chmod 755 /usr/bin/ghostty
 
   - type: copy
     from: v4l2loopback
