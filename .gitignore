@@ -1,3 +1,4 @@
 Containerfile*
 cosign.key
 /.bluebuild-scripts_*
+__pycache__/
