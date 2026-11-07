@@ -27,5 +27,6 @@ fi
 
 # HEVC/H.265 via VA-API on radeonsi (iOS screen recordings). VaapiVideoDecodeLinuxGL does not work for this.
 exec "@BRAVE_DIR@/brave" \
-  --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL \
+  --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,WaylandOverlayDelegation \
+  --enable-zero-copy \
   "$@"
