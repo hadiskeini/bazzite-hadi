@@ -6,6 +6,9 @@ side button would never become Super. This one sends "pass 1" while a game is fo
 "pass 0" otherwise. Game rules as in the extension, without "any fullscreen window": app_id
 steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, or an
 app_id from the extension's game-classes. hold-ms and game-classes come from its GSettings.
+
+While a game or a fullscreen-sized window is focused it also turns on warp-mouse-to-focus
+(through ~/.config/niri/warp.kdl), so the pointer follows focus out of a game that hides it.
 """
 import asyncio
 import json
@@ -14,6 +17,9 @@ import re
 import subprocess
 
 SOCK = os.path.join(os.environ["XDG_RUNTIME_DIR"], "holdsuper.sock")
+WARP_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                         "niri", "warp.kdl")
+WARP_ON = 'input {\n    warp-mouse-to-focus mode="center-xy"\n}\n'
 SCHEMA_DIR = "/usr/share/gnome-shell/extensions/hold-super@hadi.local/schemas"
 
 
@@ -55,6 +61,36 @@ def is_game(win):
     return bool(win.get("pid")) and process_is_game(win["pid"])
 
 
+def output_sizes():
+    try:
+        out = subprocess.run(["niri", "msg", "--json", "outputs"],
+                             capture_output=True, text=True, timeout=5, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {(o["logical"]["width"], o["logical"]["height"])
+            for o in json.loads(out).values() if o.get("logical")}
+
+
+class Warp:
+    """niri reloads its config when warp.kdl changes, so the file is written only on a change."""
+
+    def __init__(self):
+        self.on = None
+        self.set(False)
+
+    def set(self, on):
+        if on == self.on:
+            return
+        self.on = on
+        tmp = WARP_FILE + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.write(WARP_ON if on else "")
+            os.replace(tmp, WARP_FILE)
+        except OSError:
+            self.on = None
+
+
 class Daemon:
     """The holdsuper socket; reconnects when the daemon restarts (it never writes, so EOF = closed)."""
 
@@ -85,6 +121,8 @@ class Daemon:
 async def main():
     daemon = Daemon()
     asyncio.create_task(daemon.run())
+    warp = Warp()
+    sizes = output_sizes()
     windows, focused = {}, None
     proc = await asyncio.create_subprocess_exec("niri", "msg", "--json", "event-stream",
                                                 stdout=asyncio.subprocess.PIPE)
@@ -102,10 +140,15 @@ async def main():
             windows.pop(ev["WindowClosed"]["id"], None)
         elif "WindowFocusChanged" in ev:
             focused = ev["WindowFocusChanged"]["id"]
+        elif "WorkspacesChanged" in ev:
+            sizes = output_sizes()
+            continue
         else:
             continue
         win = windows.get(focused)
-        daemon.set_pass(1 if win and is_game(win) else 0)
+        game = bool(win) and is_game(win)
+        daemon.set_pass(1 if game else 0)
+        warp.set(game or bool(win) and tuple(win["layout"]["window_size"]) in sizes)
     raise SystemExit("niri event stream ended")
 
 
