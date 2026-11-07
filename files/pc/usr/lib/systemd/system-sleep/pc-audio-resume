@@ -1,0 +1,8 @@
+#!/bin/sh
+# After S3 the EVO4 and PipeWire keep stale stream state and the audio distorts until PipeWire restarts.
+[ "$1" = post ] || exit 0
+for dir in /run/user/*; do
+    user=$(stat -c %U "$dir") || continue
+    systemctl --user -M "$user@" --no-block try-restart pipewire.service pipewire-pulse.service wireplumber.service
+done
+exit 0
