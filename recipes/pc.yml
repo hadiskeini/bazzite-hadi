@@ -56,7 +56,6 @@ modules:
   - type: kargs
     kargs:
       - mitigations=off                    # LAN-only single-user box; browsers handle JS Spectre
-      - mem_sleep_default=s2idle           # RX 9070 SMU resume hang on S3
       - video=DP-3:3840x2160@144e          # 144 Hz console and splash on the 4K panel
       - amdgpu.ppfeaturemask=0xfff7ffff    # LACT overdrive
       - nowatchdog                         # no soft/hard lockup watchdog timers: a hung desktop gets a reboot anyway
