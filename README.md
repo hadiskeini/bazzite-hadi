@@ -1,3 +1,4 @@
+[![bluebuild](https://github.com/hadiskeini/bazzite-hadi/actions/workflows/build.yml/badge.svg)](https://github.com/hadiskeini/bazzite-hadi/actions/workflows/build.yml)
 # bazzite-hadi
 
 The OS images for two machines, built with [BlueBuild](https://blue-build.org):
