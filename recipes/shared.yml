@@ -25,11 +25,15 @@ modules:
         - steamdeck-backgrounds
         - steamdeck-gnome-presets
 
-  # Bazzite ships Terra turned off at priority 1. Turn it on for Ghostty only, so its dependencies come from Fedora.
-  # Bazzite skips weak dependencies: shell-integration is named on purpose.
-  - type: script
-    snippets:
-      - dnf -y install --enablerepo=terra --setopt=terra.includepkgs='ghostty*' ghostty ghostty-shell-integration
+  # The upstream-linked COPR ships new Ghostty releases first; Terra lags. The package includes shell integration.
+  - type: dnf
+    repos:
+      copr:
+        - scottames/ghostty
+      cleanup: true
+    install:
+      packages:
+        - ghostty
 
   - type: script
     scripts:

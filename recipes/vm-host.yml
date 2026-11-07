@@ -17,13 +17,13 @@ modules:
         - python3-evdev        # OmacVM's gestures and side-button daemons (files/vm)
         - gcc                  # the C linker for cargo (sys in ~/home); came with akmods before the prebuilt module
 
-  # Fedora has no Ghostty. Terra is on only for this module: its dependencies (gtk4-layer-shell) come from Fedora.
+  # Fedora has no Ghostty. The upstream-linked COPR ships new releases first; Terra lags.
   # Ghostty needs OpenGL 4.3 (virgl gives 4.1): libEGL_omacvm (stage omacvm-gpu) gives it Zink with OmacVM's switch,
   # else llvmpipe. Do not set LIBGL_ALWAYS_SOFTWARE or a driver variable for it: the library then keeps out.
   - type: dnf
     repos:
-      files:
-        - https://github.com/terrapkg/subatomic-repos/raw/main/terra.repo
+      copr:
+        - scottames/ghostty
       cleanup: true
     install:
       packages:
