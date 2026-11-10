@@ -1,0 +1,111 @@
+#!/usr/bin/python3 -I
+# Umbriel front end for the holdsuper daemon: the same job as the GNOME extension hold-super@hadi.local.
+# It sends "hold"/"overview" from the extension's dconf settings, then "pass 1" while a game is focused
+# and "pass 0" otherwise. Settings are read at start; restart the unit to apply changes.
+
+import json
+import os
+import re
+import select
+import socket
+import subprocess
+import sys
+import time
+
+DCONF = "/org/gnome/shell/extensions/hold-super/"
+SOCKET_PATH = os.path.join(os.environ["XDG_RUNTIME_DIR"], "holdsuper.sock")
+MAX_ANCESTORS = 12
+
+
+def dconf(key, default):
+    out = subprocess.run(["dconf", "read", DCONF + key], capture_output=True, text=True).stdout.strip()
+    if not out:
+        return default
+    if out in ("true", "false"):
+        return out == "true"
+    if out.startswith("@as "):
+        out = out[4:]
+    return json.loads(out.replace("'", '"')) if out.startswith("[") else int(out)
+
+
+HOLD_MS = dconf("hold-ms", 100)
+OVERVIEW = dconf("overview-on-release", True)
+FULLSCREEN_IS_GAME = dconf("fullscreen-is-game", False)
+GAME_CLASSES = {c.strip().lower() for c in dconf("game-classes", [])}
+
+
+def read_proc(pid, name):
+    try:
+        with open(f"/proc/{pid}/{name}", "rb") as f:
+            return f.read().decode(errors="replace")
+    except OSError:
+        return None
+
+
+def process_looks_like_game(pid):
+    for _ in range(MAX_ANCESTORS):
+        if pid <= 1:
+            return False
+        cmdline = read_proc(pid, "cmdline")
+        if cmdline:
+            argv = cmdline.split("\0")
+            if argv[0].lower().endswith(".exe") or "SteamLaunch" in argv:
+                return True
+        stat = read_proc(pid, "stat")
+        if not stat:
+            return False
+        pid = int(stat[stat.rfind(")") + 2:].split(" ")[1])
+    return False
+
+
+def is_game(win):
+    app = (win.get("app_id") or "").lower()
+    if re.fullmatch(r"steam_app_\d+", app) or app.endswith(".exe") or app in GAME_CLASSES:
+        return True
+    if win.get("content_type") == "game" or (FULLSCREEN_IS_GAME and win.get("fullscreen")):
+        return True
+    return win.get("pid", 0) > 0 and process_looks_like_game(win["pid"])
+
+
+def connect():
+    while True:
+        try:
+            conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            conn.connect(SOCKET_PATH)
+            conn.sendall(f"hold {HOLD_MS}\noverview {int(OVERVIEW)}\n".encode())
+            return conn
+        except OSError:
+            conn.close()
+            time.sleep(2)
+
+
+def main():
+    events = subprocess.Popen(["umbriel", "subscribe", "windows"], stdout=subprocess.PIPE)
+    fd = events.stdout.fileno()
+    conn, sent, want, buf = connect(), None, 0, b""
+    while True:
+        ready, _, _ = select.select([fd, conn], [], [])
+        if fd in ready:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                sys.exit("umbriel subscribe ended")
+            *lines, buf = (buf + chunk).split(b"\n")
+            if lines:
+                windows = json.loads(lines[-1]).get("data", [])
+                focused = next((w for w in windows if w.get("focused")), None)
+                want = int(focused is not None and is_game(focused))
+        # The daemon never writes: a readable socket means it closed (daemon restarted).
+        if conn in ready:
+            conn.close()
+            conn, sent = connect(), None
+        if want != sent:
+            try:
+                conn.sendall(f"pass {want}\n".encode())
+                sent = want
+            except OSError:
+                conn.close()
+                conn, sent = connect(), None
+
+
+if __name__ == "__main__":
+    main()

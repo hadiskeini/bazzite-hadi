@@ -1,0 +1,13 @@
+# Umbriel counterpart of the GNOME extension hold-super@hadi.local: drives holdsuper.service.
+[Unit]
+Description=holdsuper front end for Umbriel
+PartOf=umbriel-session.target
+After=umbriel-session.target holdsuper.service
+
+[Service]
+ExecStart=/usr/libexec/holdsuper-umbriel
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=umbriel-session.target

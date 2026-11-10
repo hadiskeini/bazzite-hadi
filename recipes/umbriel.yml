@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# Umbriel (stacking) with the Noctalia shell, next to GNOME; in both images. Sources as the official install guides
+# name them: Umbriel and its portal are Terra nightlies, Noctalia is Fedora's own package.
+# Umbriel starts its own Xwayland (general.xwayland); Noctalia starts from Umbriel's autostart in the user config.
+modules:
+  - type: dnf
+    repos:
+      files:
+        - https://raw.githubusercontent.com/terrapkg/subatomic-repos/main/terra.repo
+      cleanup: true
+    install:
+      packages:
+        - umbriel-nightly
+        - xdg-desktop-portal-umbriel-nightly
+
+  - type: dnf
+    install:
+      packages:
+        - noctalia
+        - xorg-x11-server-Xwayland
+
+  # The packages ship no GDM session entry and no portals.conf; also the Umbriel oo7 hook and holdsuper's front end.
+  - type: files
+    files:
+      - source: umbriel
+        destination: /
+
+  # Keep Noctalia's launchers out of GNOME's app grid. The session sets XDG_CURRENT_DESKTOP=umbriel (lowercase).
+  - type: script
+    snippets:
+      - for f in /usr/share/applications/dev.noctalia.Noctalia*.desktop; do sed -i '/^\[Desktop Entry\]/a OnlyShowIn=Umbriel;umbriel;' "$f"; done
+
+  - type: systemd
+    user:
+      enabled:
+        - holdsuper-umbriel.service

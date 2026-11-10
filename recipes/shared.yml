@@ -70,4 +70,3 @@ modules:
     user:
       enabled:
         - holdsuper.service       # waits for hold-super@hadi.local; holds no device without it
-        - holdsuper-niri.service  # holdsuper's front end in niri (WantedBy niri.service)

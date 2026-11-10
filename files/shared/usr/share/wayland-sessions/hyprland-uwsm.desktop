@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Hyprland (uwsm-managed)
-Comment=Hyprland, started as systemd units by uwsm
-Exec=uwsm start -e -D Hyprland hyprland.desktop
-TryExec=uwsm
-DesktopNames=Hyprland
-Type=Application

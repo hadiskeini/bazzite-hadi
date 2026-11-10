@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Umbriel
+Comment=Umbriel with the Noctalia shell
+Exec=start-umbriel
+TryExec=start-umbriel
+DesktopNames=Umbriel
+Type=Application
