@@ -14,7 +14,8 @@ modules:
         dnf -y --enablerepo=terra install umbriel-nightly xdg-desktop-portal-umbriel-nightly noctalia
         rm -f /etc/yum.repos.d/umbriel-terra.repo
 
-  # The packages ship no GDM session entry and no portals.conf; also the Umbriel oo7 hook and holdsuper's front end.
+  # umbriel-portals.conf replaces the package's own: it adds oo7 as the Secret portal. Also the Umbriel oo7 hook
+  # and holdsuper's front end. The GDM session entry is the package's.
   - type: files
     files:
       - source: umbriel
