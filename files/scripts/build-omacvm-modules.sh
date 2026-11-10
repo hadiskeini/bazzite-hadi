@@ -5,11 +5,13 @@
 set -euo pipefail
 
 kernel=$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | tail -n1)
-# The mirrors can lag a new kernel by a day or more; Koji has every build.
+# The mirrors can lag a new kernel by a day or more; Koji has every build. kernel-devel-matched comes along:
+# akmods requires it, and the mirrors' older one pins an older kernel-devel.
 install_kernel_devel() {
   dnf -y install "kernel-devel-$kernel" "$@" && return
   local rest=${kernel#*-}
-  dnf -y install "https://kojipkgs.fedoraproject.org/packages/kernel/${kernel%%-*}/${rest%.*}/${rest##*.}/kernel-devel-$kernel.rpm" "$@"
+  local koji="https://kojipkgs.fedoraproject.org/packages/kernel/${kernel%%-*}/${rest%.*}/${rest##*.}"
+  dnf -y install "$koji/kernel-devel-$kernel.rpm" "$koji/kernel-devel-matched-$kernel.rpm" "$@"
 }
 install_kernel_devel gcc make kmod elfutils-libelf-devel
 mkdir -p /out

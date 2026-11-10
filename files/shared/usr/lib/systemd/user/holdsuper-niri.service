@@ -3,10 +3,11 @@
 Description=holdsuper front end for niri (game detection, pass mode)
 PartOf=niri.service
 After=niri.service holdsuper.service
-# Outside niri it fails and restarts every 2 s, and each start takes the holdsuper socket from the other front end.
-ConditionEnvironment=NIRI_SOCKET
 
 [Service]
+# Outside niri it would fail and restart every 2 s, and each start takes the holdsuper socket from the other
+# front end. ExecCondition runs on every restart too; a [Unit] Condition did not stop the loop.
+ExecCondition=/usr/bin/niri msg version
 ExecStart=/usr/libexec/holdsuper-niri
 Restart=on-failure
 RestartSec=2
