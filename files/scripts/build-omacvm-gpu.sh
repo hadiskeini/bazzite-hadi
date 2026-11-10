@@ -11,7 +11,13 @@ set -euo pipefail
 kernel=$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | tail -n1)
 version=${kernel%%-*}
 [[ $version == *.*.0 ]] && version=${version%.0}   # tag v7.2, not v7.2.0
-dnf -y install "kernel-devel-$kernel" gcc make patch kmod elfutils-libelf-devel libva-devel libglvnd-devel
+# The mirrors can lag a new kernel by a day or more; Koji has every build.
+install_kernel_devel() {
+  dnf -y install "kernel-devel-$kernel" "$@" && return
+  local rest=${kernel#*-}
+  dnf -y install "https://kojipkgs.fedoraproject.org/packages/kernel/${kernel%%-*}/${rest%.*}/${rest##*.}/kernel-devel-$kernel.rpm" "$@"
+}
+install_kernel_devel gcc make patch kmod elfutils-libelf-devel libva-devel libglvnd-devel
 mkdir -p /out
 
 # The shims. Mesa's VA driver is in /usr/lib64/dri on Fedora, not in Arch's /usr/lib/dri.

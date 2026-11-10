@@ -5,7 +5,13 @@
 set -euo pipefail
 
 kernel=$(rpm -q kernel --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' | tail -n1)
-dnf -y install "kernel-devel-$kernel" gcc make kmod elfutils-libelf-devel
+# The mirrors can lag a new kernel by a day or more; Koji has every build.
+install_kernel_devel() {
+  dnf -y install "kernel-devel-$kernel" "$@" && return
+  local rest=${kernel#*-}
+  dnf -y install "https://kojipkgs.fedoraproject.org/packages/kernel/${kernel%%-*}/${rest%.*}/${rest##*.}/kernel-devel-$kernel.rpm" "$@"
+}
+install_kernel_devel gcc make kmod elfutils-libelf-devel
 mkdir -p /out
 for src in /src/*/; do
   if ! make -s -j"$(nproc)" -C "/usr/src/kernels/$kernel" M="${src%/}" modules; then
