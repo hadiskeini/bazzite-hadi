@@ -1,0 +1,11 @@
+# holdsuper's front end in Hyprland. No [Install]: hyprland.lua starts it after uwsm has exported
+# HYPRLAND_INSTANCE_SIGNATURE.
+[Unit]
+Description=holdsuper front end for Hyprland (game detection, pass mode)
+PartOf=graphical-session.target
+After=graphical-session.target holdsuper.service
+
+[Service]
+ExecStart=/usr/libexec/holdsuper-hyprland
+Restart=on-failure
+RestartSec=2
