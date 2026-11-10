@@ -112,6 +112,17 @@ const PIP_ASPECT = 16 / 9;
 // MetaGrabOp direction bits (verified against Meta-18's GrabOp values).
 const DIR_W = 0x1000, DIR_E = 0x2000, DIR_S = 0x4000, DIR_N = 0x8000;
 
+// A window at a logical position that is not a whole physical pixel (odd x/y at
+// scale 1.5) is resampled on every frame: about 50 % more Shell CPU while it
+// draws. The smallest logical step that lands on whole physical pixels.
+function pixelStep(scale) {
+    for (let n = 1; n <= 8; n++) {
+        if (Math.abs(n * scale - Math.round(n * scale)) < 1e-6)
+            return n;
+    }
+    return 1;
+}
+
 function isPip(win) {
     const title = (win.get_title() || '').toLowerCase();
     return PIP_TITLES.includes(title) || title.endsWith(' - pip');
@@ -272,7 +283,7 @@ export default class WindowGeometryExtension extends Extension {
     _movePipToCorner(win) {
         const wa = win.get_work_area_current_monitor();
         const r = win.get_frame_rect();
-        win.move_frame(false,
+        this._moveFrameSnapped(win,
             wa.x + wa.width - r.width - PIP_MARGIN,
             wa.y + wa.height - r.height - PIP_MARGIN);
     }
@@ -359,6 +370,7 @@ export default class WindowGeometryExtension extends Extension {
             const r = frameRect(cur.win);
             if (r.x !== want.x || r.y !== want.y || r.w !== want.w || r.h !== want.h)
                 cur.win.move_resize_frame(false, want.x, want.y, want.w, want.h);
+            this._alignBuffer(cur.win);
         }
         cur.settled = true;
         this._scheduleSave();
@@ -367,7 +379,7 @@ export default class WindowGeometryExtension extends Extension {
     _center(win) {
         const wa = win.get_work_area_current_monitor();
         const r = win.get_frame_rect();
-        win.move_frame(false,
+        this._moveFrameSnapped(win,
             wa.x + Math.round((wa.width - r.width) / 2),
             wa.y + Math.round((wa.height - r.height) / 2));
     }
@@ -468,10 +480,35 @@ export default class WindowGeometryExtension extends Extension {
         const entry = this._state?.apps?.[cls]?.[slot];
         if (!entry)
             return null;
-        const mon = Main.layoutManager.monitors[this._indexForConnector(entry.connector)];
+        const index = this._indexForConnector(entry.connector);
+        const mon = Main.layoutManager.monitors[index];
         if (!mon)
             return null; // no monitors at all — nothing sensible to do.
-        return {...entry, x: mon.x + entry.rx, y: mon.y + entry.ry};
+        const step = pixelStep(global.display.get_monitor_scale(index));
+        const snap = v => Math.round(v / step) * step;
+        return {...entry, x: mon.x + snap(entry.rx), y: mon.y + snap(entry.ry)};
+    }
+
+    _moveFrameSnapped(win, x, y) {
+        win.move_frame(false, x, y);
+        this._alignBuffer(win);
+    }
+
+    // Client-side shadows offset the buffer from the frame, so align the buffer
+    // origin (what the compositor samples), not the frame.
+    _alignBuffer(win) {
+        const index = win.get_monitor();
+        const mon = Main.layoutManager.monitors[index];
+        if (!mon)
+            return;
+        const step = pixelStep(global.display.get_monitor_scale(index));
+        const b = win.get_buffer_rect();
+        const off = (v, o) => o + Math.round((v - o) / step) * step - v;
+        const dx = off(b.x, mon.x), dy = off(b.y, mon.y);
+        if (dx || dy) {
+            const f = win.get_frame_rect();
+            win.move_frame(false, f.x + dx, f.y + dy);
+        }
     }
 
     // Arm the title check (see TITLE_MATCH_GRACE_MS). Pointless for a single-
@@ -576,6 +613,16 @@ export default class WindowGeometryExtension extends Extension {
     }
 
     _onGrabEnd(win) {
+        if (win && win.get_window_type() === Meta.WindowType.NORMAL) {
+            const id = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                this._aspectIdles.delete(id);
+                if (win.get_compositor_private() && !win.fullscreen &&
+                    !win.maximized_horizontally && !win.maximized_vertically)
+                    this._alignBuffer(win);
+                return GLib.SOURCE_REMOVE;
+            });
+            this._aspectIdles.add(id);
+        }
         const grab = win && this._pipResize.get(win);
         if (!grab)
             return;
@@ -631,6 +678,7 @@ export default class WindowGeometryExtension extends Extension {
         x = Math.max(wa.x, Math.min(x, wa.x + wa.width - w));
         y = Math.max(wa.y, Math.min(y, wa.y + wa.height - h));
         win.move_resize_frame(false, x, y, w, h);
+        this._alignBuffer(win);
     }
 
     // ───────────────────────────── save path ────────────────────────────────
