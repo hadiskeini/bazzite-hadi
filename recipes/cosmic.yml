@@ -25,3 +25,4 @@ modules:
     user:
       enabled:
         - cosmic-comp-rt.service
+        - holdsuper-cosmic.service

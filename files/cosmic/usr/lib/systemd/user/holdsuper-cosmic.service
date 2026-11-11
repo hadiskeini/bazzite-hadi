@@ -1,0 +1,13 @@
+# COSMIC counterpart of the GNOME extension hold-super@hadi.local: drives holdsuper.service.
+[Unit]
+Description=holdsuper front end for COSMIC
+PartOf=cosmic-session.target
+After=cosmic-session.target holdsuper.service
+
+[Service]
+ExecStart=/usr/libexec/holdsuper-cosmic
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=cosmic-session.target
