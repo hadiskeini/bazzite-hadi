@@ -44,7 +44,6 @@ modules:
   - from-file: shared.yml
   - from-file: pc.yml
   - from-file: umbriel.yml
-  - from-file: cosmic.yml
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:
