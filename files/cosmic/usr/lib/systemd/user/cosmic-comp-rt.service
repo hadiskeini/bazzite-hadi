@@ -1,0 +1,10 @@
+[Unit]
+Description=Realtime priority for cosmic-comp
+PartOf=cosmic-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/cosmic-comp-rt
+
+[Install]
+WantedBy=cosmic-session.target

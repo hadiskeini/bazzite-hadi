@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# COSMIC, the desktop of both machines; GNOME stays as the backup session and GDM as the login screen.
+# Nightly builds of COSMIC's main branches (the COPR that upstream names); Fedora's own packages are the stable
+# releases. Not installed: cosmic-store (Flatpaks come from flatpaks.txt in the home repo).
+modules:
+  - type: dnf
+    repos:
+      copr:
+        - ryanabx/cosmic-epoch
+      cleanup: true
+    install:
+      packages:
+        - cosmic-session
+        - cosmic-files
+        - cosmic-edit
+        - cosmic-term
+        - cosmic-player
+
+  - type: files
+    files:
+      - source: cosmic
+        destination: /
+
+  - type: systemd
+    user:
+      enabled:
+        - cosmic-comp-rt.service

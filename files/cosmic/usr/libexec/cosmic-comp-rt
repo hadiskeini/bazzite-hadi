@@ -1,0 +1,9 @@
+#!/bin/sh
+# cosmic-comp starts a frame a few ms before the refresh and asks for no realtime priority: under CPU load a late
+# wake-up drops the frame. --reset-on-fork: the programs that cosmic-comp starts must not inherit the priority.
+# 10 is below PipeWire's audio threads; the limit for it is in /etc/security/limits.d/60-cosmic-comp-rt.conf.
+pid=$(pgrep -u "$(id -u)" -x cosmic-comp | head -n 1)
+[ -n "$pid" ] || exit 0
+for tid in $(ps -L -o tid=,cls= -p "$pid" | awk '$2 == "TS" {print $1}'); do
+  chrt --reset-on-fork --rr --pid 10 "$tid"
+done

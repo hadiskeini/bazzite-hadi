@@ -14,7 +14,8 @@ The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 - `recipes/vm.yml` — vm-silverblue: base image, build stages, module order
 - `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM's GPU driver and
   shims, OmacVM udev rules)
-- `recipes/umbriel.yml` — the Umbriel session with the Noctalia shell, in both images
+- `recipes/cosmic.yml` — the COSMIC desktop (nightly builds), in both images (Umbriel and Noctalia: tag
+  `archive/umbriel-2026-11-11`)
 - `docs/quirks.md` — workarounds that exist only because of a gap elsewhere, and when to check them
 - `files/` — files copied into the images, sources for the build stages, build scripts
 - `.github/workflows/image.yml` — one image: check inputs, build, test the ostree import, move `latest`;
