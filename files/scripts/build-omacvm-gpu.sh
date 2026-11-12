@@ -36,7 +36,9 @@ mkdir -p "$src"
 for f in Makefile virtgpu_debugfs.c virtgpu_display.c virtgpu_drv.c virtgpu_drv.h virtgpu_fence.c virtgpu_gem.c \
          virtgpu_ioctl.c virtgpu_kms.c virtgpu_object.c virtgpu_plane.c virtgpu_prime.c virtgpu_submit.c \
          virtgpu_trace.h virtgpu_trace_points.c virtgpu_vq.c virtgpu_vram.c; do
-  curl --fail --silent --show-error --location --retry 3 -o "$src/$f" "$base/$f?h=v$version"
+  # --retry alone does not try again after a failed connection.
+  curl --fail --silent --show-error --location --connect-timeout 20 --retry 6 --retry-delay 15 --retry-all-errors \
+    -o "$src/$f" "$base/$f?h=v$version"
 done
 # No fuzz: a hunk must fit exactly, so none lands in the wrong place of a newer kernel.
 fits() { patch --dry-run -s -d "$work" -p1 -f -F 0 -i "/src/$1" > /dev/null; }
