@@ -2,6 +2,8 @@
 # COSMIC front end for the holdsuper daemon: the same job as the GNOME extension hold-super@hadi.local.
 # It sends "hold"/"overview" from the extension's dconf settings, then "pass 1" while a game is focused
 # and "pass 0" otherwise. Settings are read at start; restart the unit to apply changes.
+# "combos 1": COSMIC has no mouse buttons in its shortcuts, so the daemon sends Super+F12 (minimize, a custom
+# shortcut in the home repo) and Super+Q (close) for the middle and the other side button during a hold.
 # The focused window comes from ext_foreign_toplevel_list_v1 and zcosmic_toplevel_info_v1, spoken on the wire:
 # the image has no Wayland client library for Python.
 
@@ -121,7 +123,7 @@ def connect():
         try:
             conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             conn.connect(SOCKET_PATH)
-            conn.sendall(f"hold {HOLD_MS}\noverview {int(OVERVIEW)}\n".encode())
+            conn.sendall(f"hold {HOLD_MS}\noverview {int(OVERVIEW)}\ncombos 1\n".encode())
             return conn
         except OSError:
             conn.close()

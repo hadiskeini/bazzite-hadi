@@ -6,7 +6,7 @@
 // or another button/wheel used while it is down -> a separate uinput keyboard holds Super.
 //
 // The GNOME extension hold-super@hadi.local drives it over $XDG_RUNTIME_DIR/holdsuper.sock with
-// newline-terminated commands: "pass 0|1", "hold <ms>", "overview 0|1". "pass 1" (a game is
+// newline-terminated commands: "pass 0|1", "hold <ms>", "overview 0|1", "combos 0|1". "pass 1" (a game is
 // focused) CLOSES the device: the mouse then runs the stock kernel -> libinput path with nothing of
 // ours in it. With no extension connected the daemon also stays in pass mode.
 //
@@ -50,6 +50,10 @@ static bool verbose;
 static bool pass = true;          // true = device closed, mouse fully native
 static int hold_ms = 200;
 static bool overview = false;     // let a lone hold-and-release open Activities, like a real Super tap
+// During a hold, the middle button sends Super+F12 and the other side button Super+Q, in place of the click:
+// the desktop binds them to minimize and close. For a desktop without mouse buttons in its shortcuts.
+static bool combos = false;
+static bool swallowed_middle, swallowed_side;
 
 static int src = -1;              // grabbed source device, -1 while passing through
 static int clone_fd = -1, kbd_fd = -1;
@@ -96,6 +100,8 @@ static int make_kbd(void) {
     ioctl(fd, UI_SET_EVBIT, EV_KEY);
     ioctl(fd, UI_SET_KEYBIT, KEY_LEFTMETA);
     ioctl(fd, UI_SET_KEYBIT, KEY_UNKNOWN);
+    ioctl(fd, UI_SET_KEYBIT, KEY_F12);
+    ioctl(fd, UI_SET_KEYBIT, KEY_Q);
     ioctl(fd, UI_SET_PHYS, PHYS_TAG "/kbd");
     struct uinput_setup us = {.id = {.bustype = BUS_VIRTUAL, .vendor = 0x1d6b, .product = 0x5355, .version = 1}};
     snprintf(us.name, sizeof us.name, "holdsuper Super key");
@@ -340,6 +346,17 @@ static void read_source(void) {
                     if (state == PENDING) resolve_hold();
                 }
             }
+            if (ev->type == EV_KEY && (ev->code == BTN_MIDDLE || ev->code == BTN_SIDE)) {
+                bool *swallowed = ev->code == BTN_MIDDLE ? &swallowed_middle : &swallowed_side;
+                if (ev->value == 1 && combos && state == HELD) {
+                    int key = ev->code == BTN_MIDDLE ? KEY_F12 : KEY_Q;
+                    emit(kbd_fd, EV_KEY, key, 1); syn(kbd_fd);
+                    emit(kbd_fd, EV_KEY, key, 0); syn(kbd_fd);
+                    *swallowed = true;
+                    continue;
+                }
+                if (ev->value == 0 && *swallowed) { *swallowed = false; continue; }
+            }
             if (ev->type == EV_KEY) set_clone_key(ev->code, ev->value);
             if (write(clone_fd, ev, sizeof *ev) != sizeof *ev && errno != EAGAIN)
                 logmsg("clone write: %s", strerror(errno));
@@ -354,6 +371,7 @@ static void handle_line(char *line) {
     if (sscanf(line, "pass %d", &v) == 1) set_pass(v != 0);
     else if (sscanf(line, "hold %d", &v) == 1 && v >= 50 && v <= 2000) hold_ms = v;
     else if (sscanf(line, "overview %d", &v) == 1) overview = v != 0;
+    else if (sscanf(line, "combos %d", &v) == 1) combos = v != 0;
     else { logmsg("unknown command: %s", line); return; }
     dbg("cmd: %s", line);
 }
@@ -375,6 +393,7 @@ static void drop_client(void) {
     close(client_fd);
     client_fd = -1;
     client_len = 0;
+    combos = false;
     set_pass(true);   // no extension = no game detection: stay native
 }
 
@@ -392,7 +411,8 @@ static void read_client(void) {
 }
 
 static bool is_front_end_line(const char *line) {
-    return !strncmp(line, "pass ", 5) || !strncmp(line, "hold ", 5) || !strncmp(line, "overview ", 9);
+    return !strncmp(line, "pass ", 5) || !strncmp(line, "hold ", 5) || !strncmp(line, "overview ", 9) ||
+           !strncmp(line, "combos ", 7);
 }
 
 // A new connection replaces the front end only if its first line is a front-end command. A probe (niri-at-pointer
