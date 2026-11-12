@@ -39,7 +39,7 @@ modules:
       # The package's options ("OBS Virtual Camera", one device) would replace those of 90-omacvm-camera.conf.
       - rm /usr/lib/modprobe.d/98-v4l2loopback.conf
 
-  # OmacVM's virtio-gpu driver (cursor plane for niri, the damage fix), its VA-API and EGL shims: built for this
+  # OmacVM's virtio-gpu driver (cursor plane, the damage fix), its VA-API and EGL shims: built for this
   # image's kernel and Mesa in the stage omacvm-gpu (files/src/omacvm-gpu).
   - type: copy
     from: omacvm-gpu

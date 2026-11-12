@@ -83,7 +83,7 @@ modules:
         - cups.service                     # no printer
         - cups.socket
         - cups.path
-        - geoclue.service                  # no location user (Dux Shell has auto location off)
+        - geoclue.service                  # no location user (GNOME location services off)
         - unbound-anchor.timer             # unbound is not installed
         - raid-check.timer                 # no md RAID
     user:

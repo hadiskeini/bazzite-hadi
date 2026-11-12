@@ -6,12 +6,11 @@ F19 = forward button: tap = BTN_EXTRA; held past hold_ms, or another button or t
 wheel used while it is down = Super, like holdsuper on the PC.
 Settings come from the hold-super extension over $XDG_RUNTIME_DIR/holdsuper.sock
 ("hold <ms>", "overview 0|1"); "pass" is ignored: the VM runs no games.
-With no extension connected (niri), Super goes down at once on the press, so the first
+With no extension connected, Super goes down at once on the press, so the first
 wheel notch already has Super; a tap still releases Super and then clicks BTN_EXTRA.
 F17 = Caps Lock (mac/caps-lock.lua): a held Caps Lock, so the session's xkb option
-(niri caps:super, GNOME caps:hyper) applies as on the PC.
-"ping" answers "pong"; "click" presses BTN_TASK and answers "ok". niri-at-pointer (~/home)
-uses them: niri's pick-window grab takes that click, apps ignore the button.
+(GNOME caps:hyper) applies as on the PC.
+"ping" answers "pong"; "click" presses BTN_TASK and answers "ok".
 """
 import asyncio
 import os
@@ -135,7 +134,7 @@ async def scan():
 
 async def client(reader, writer):
     global hold_ms, overview, clients
-    extension = False   # a niri-at-pointer connection must not turn off Super at once
+    extension = False   # a ping or click connection must not turn off Super at once
     try:
         async for line in reader:
             cmd, _, arg = line.decode().strip().partition(" ")

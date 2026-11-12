@@ -1,6 +1,6 @@
 # vm-silverblue: Fedora Silverblue in OmacVM.app
 
-The image `silverblue-vm` is Fedora Silverblue (aarch64) with niri for a VM in
+The image `silverblue-vm` is Fedora Silverblue (aarch64) with GNOME for a VM in
 [OmacVM.app](https://github.com/gillesgoetsch/OmacVM) on an Apple Silicon Mac. It has OmacVM's hardware
 integration without Omarchy: GPU parts (`files/src/omacvm-gpu`), the battery and backlight modules, and the
 guest agents in `files/vm`. Home config is in `~/home` (host `vm-silverblue`); the Mac's files are in
@@ -30,16 +30,15 @@ guest agents in `files/vm`. Home config is in `~/home` (host `vm-silverblue`); t
 |---|---|---|
 | The Mac's settings at start | `omacvm-app-host` (system) | SMBIOS strings to `/run/omacvm/host.env`: Ghostty's GPU switch, FullPanel, Vulkan windows. |
 | Trackpad gestures | `omacvm-gestures` (system) | A three-finger tap is a middle click (`OMACVM_TAP3_TIME`, `OMACVM_TAP3_MOVE`); keep tap-to-click off. |
-| Mouse side buttons, Caps Lock | `omacvm-side-buttons` (user) | Needs `mac/side-buttons.lua` and `mac/caps-lock.lua` in Hammerspoon. `niri-at-pointer` (`~/home`) uses its "ping" and "click". |
+| Mouse side buttons, Caps Lock | `omacvm-side-buttons` (user) | Needs `mac/side-buttons.lua` and `mac/caps-lock.lua` in Hammerspoon. |
 | Mac camera, Mac USB webcam | `omacvm-camera`, `omacvm-usbcam` (user), v4l2loopback | `/dev/video42` "Mac Camera", `/dev/video43` "USB Camera" (needs `mac/webcam.lua`). |
 | Sound delay | `omacvm-audio-latency` (user, and the app through the guest agent) | The app calls `/usr/local/bin/omacvm-audio-latency`: a tmpfiles link to `/usr/libexec/qemu-ga/fsfreeze-hook.d/`, where Fedora's policy gives the label the agent may run. The freeze hook runs only `/etc/qemu-ga/fsfreeze-hook.d`. |
 | Mac folder at `~/Mac` | `omacvm-mac-folder` (system) | virtio-9p, when the app shares a folder. |
 | Touch ID for sudo, sudo -i, polkit | `omacvm-touchid`, `omacvm-touchid-note`, PAM lines (`files/scripts/install-omacvm-touchid.sh`), polkit rule and drop-in | The key is the only part not in the image. The password works either way. |
 | Clipboard, Mac volume and brightness, battery | `omacvm-clipboard`, `omacvm-bridge-events`, `omacvm-mac-levels`, `omacvm-battery` | |
-| niri helpers | `omacvm-display-hello`, `omacvm-niri-scale` | Started from niri's host config in `~/home`. |
 
-GNOME's integration (the `omacvm-integration@local` extension, `omacvm-displays`) is not in the image: this VM
-uses niri only.
+GNOME's integration (the `omacvm-integration@local` extension) is not in the image: it is in `~/home`
+(`hosts/vm-silverblue`).
 
 ## Rules
 
@@ -51,17 +50,16 @@ uses niri only.
   `disk-jobs`: the app's own step works only for Omarchy.
 - Do not set the app's `macPointer`: the pointer becomes invisible.
 - One display at a time (default): the VM stays in one window, the only one with the app's 120 Hz path. With the
-  lid closed it moves to the external display, and `omacvm-niri-scale` sets the scale stored for that size in
+  lid closed it moves to the external display, and `omacvm-integration@local` sets the scale stored for that size in
   `~/.local/state/omacvm/display-scales.json`.
 - Full screen on several Mac displays: bringing the app to the front shows only the main window's display; on the
   other display swipe to its VM Space (or Ctrl+arrow there). Hammerspoon cannot do it: `hs.spaces.gotoSpace`
   fails for full-screen Spaces on a second display, and the VM grabs Ctrl+arrow.
 - Volume, brightness and keyboard light: OmacVM Bridge on the Mac takes those keys while the VM is in front and
-  sets the Mac's own; the VM shows the level in Dux Shell's OSD. Keep the VM's own volume at 100 %. Set up once:
+  sets the Mac's own; the VM shows the level in GNOME's OSD. Keep the VM's own volume at 100 %. Set up once:
   - Mac: `~/Applications/OmacVM.app/Contents/Resources/omacvm/src/bridge/mac/install.sh --prebuilt
     ~/Applications/OmacVM.app/Contents/Helpers/OmacVMBridge.app`, and `bridge=on` in the VM folder's `features`.
   - VM: copy the Mac's `~/Library/Application Support/omacvm-bridge/token` to `~/.config/omacvm-bridge/token` (0600).
-  - niri: switch on the plugin "Mac volume and brightness" in Dux Shell's Settings -> Plugins.
 - Caps Lock as Super: macOS sends Caps Lock to the VM only as a toggle, so `mac/caps-lock.lua` makes it F17 with
   `hidutil` while OmacVM is in front, and `omacvm-side-buttons` turns F17 back into a held Caps Lock.
 - Clicks on the screen edge in full screen: `mac/screen-edges.lua` moves a press on the outermost point one point
