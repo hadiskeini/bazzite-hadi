@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
 # COSMIC, the desktop of both machines; GNOME stays as the backup session and GDM as the login screen.
 # Nightly builds of COSMIC's main branches (the COPR that upstream names); Fedora's own packages are the stable
-# releases. Not installed: cosmic-store (Flatpaks come from flatpaks.txt in the home repo).
+# releases. cosmic-store is here for COSMIC's applets, which no other store lists.
 modules:
   - type: dnf
     repos:
@@ -15,6 +15,7 @@ modules:
         - cosmic-edit
         - cosmic-term
         - cosmic-player
+        - cosmic-store
 
   - type: files
     files:
