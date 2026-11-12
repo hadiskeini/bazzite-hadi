@@ -43,11 +43,6 @@ stages:
 modules:
   - from-file: shared.yml
   - from-file: pc.yml
-  - from-file: cosmic.yml
-  # This PC's GPU (amdgpu): with overlay planes, cosmic-comp drops frames whenever a window opens or closes.
-  - type: script
-    snippets:
-      - sed -i 's|^Exec=/usr/bin/start-cosmic$|Exec=env COSMIC_DISABLE_OVERLAY_SCANOUT=1 /usr/bin/start-cosmic|' /usr/share/wayland-sessions/cosmic.desktop && grep -q COSMIC_DISABLE_OVERLAY_SCANOUT /usr/share/wayland-sessions/cosmic.desktop
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:

@@ -4,9 +4,7 @@
 # versions alone come in with the weekly build.
 set -euo pipefail
 echo "base=$(skopeo inspect --raw docker://quay.io/fedora/fedora-silverblue:45 | sha256sum | cut -c1-64)"
-echo "cosmic=$(curl -fsSL 'https://copr.fedorainfracloud.org/api_3/package/?ownername=ryanabx&projectname=cosmic-epoch&packagename=cosmic-comp&with_latest_succeeded_build=true' \
-  | jq -r '.builds.latest_succeeded.source_package.version // "unknown"')"
-echo "files=$(git ls-files -s -- recipes/vm.yml recipes/vm-host.yml recipes/cosmic.yml files/vm files/cosmic \
+echo "files=$(git ls-files -s -- recipes/vm.yml recipes/vm-host.yml files/vm \
   files/src/omacvm-gpu files/src/omacvm-battery files/src/omacvm-backlight \
   files/scripts/build-v4l2loopback.sh files/scripts/vm-mesa.sh files/scripts/build-omacvm-gpu.sh \
   files/scripts/build-omacvm-modules.sh files/scripts/install-omacvm-gpu.sh files/scripts/install-omacvm-modules.sh files/scripts/install-omacvm-touchid.sh \
