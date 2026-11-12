@@ -3,7 +3,8 @@
 # It sends "hold"/"overview" from the extension's dconf settings, then "pass 1" while a game is focused
 # and "pass 0" otherwise. Settings are read at start; restart the unit to apply changes.
 # "combos 1": COSMIC has no mouse buttons in its shortcuts, so the daemon sends Super+F12 (minimize, a custom
-# shortcut in the home repo) and Super+Q (close) for the middle and the other side button during a hold.
+# shortcut in the home repo), Super+Q (close) and Super+Ctrl+Left/Right (workspaces) for the middle button, the
+# other side button and the wheel during a hold.
 # The focused window comes from ext_foreign_toplevel_list_v1 and zcosmic_toplevel_info_v1, spoken on the wire:
 # the image has no Wayland client library for Python.
 

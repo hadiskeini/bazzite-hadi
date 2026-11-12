@@ -50,10 +50,12 @@ static bool verbose;
 static bool pass = true;          // true = device closed, mouse fully native
 static int hold_ms = 200;
 static bool overview = false;     // let a lone hold-and-release open Activities, like a real Super tap
-// During a hold, the middle button sends Super+F12 and the other side button Super+Q, in place of the click:
-// the desktop binds them to minimize and close. For a desktop without mouse buttons in its shortcuts.
+// During a hold, the middle button sends Super+F12, the other side button Super+Q, and a wheel step
+// Super+Ctrl+Left or Right, in place of the click or scroll: the desktop binds them to minimize, close and
+// previous or next workspace. For a desktop without mouse buttons in its shortcuts.
 static bool combos = false;
 static bool swallowed_middle, swallowed_side;
+static struct timespec last_wheel_combo;   // one workspace step each 150 ms at most
 
 static int src = -1;              // grabbed source device, -1 while passing through
 static int clone_fd = -1, kbd_fd = -1;
@@ -102,6 +104,9 @@ static int make_kbd(void) {
     ioctl(fd, UI_SET_KEYBIT, KEY_UNKNOWN);
     ioctl(fd, UI_SET_KEYBIT, KEY_F12);
     ioctl(fd, UI_SET_KEYBIT, KEY_Q);
+    ioctl(fd, UI_SET_KEYBIT, KEY_LEFTCTRL);
+    ioctl(fd, UI_SET_KEYBIT, KEY_LEFT);
+    ioctl(fd, UI_SET_KEYBIT, KEY_RIGHT);
     ioctl(fd, UI_SET_PHYS, PHYS_TAG "/kbd");
     struct uinput_setup us = {.id = {.bustype = BUS_VIRTUAL, .vendor = 0x1d6b, .product = 0x5355, .version = 1}};
     snprintf(us.name, sizeof us.name, "holdsuper Super key");
@@ -345,6 +350,19 @@ static void read_source(void) {
                     used = true;
                     if (state == PENDING) resolve_hold();
                 }
+            }
+            if (combos && state == HELD && ev->type == EV_REL &&
+                (ev->code == REL_WHEEL || ev->code == REL_WHEEL_HI_RES)) {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long ms = (now.tv_sec - last_wheel_combo.tv_sec) * 1000 + (now.tv_nsec - last_wheel_combo.tv_nsec) / 1000000;
+                if (ev->code == REL_WHEEL && ev->value != 0 && ms >= 150) {
+                    int key = ev->value > 0 ? KEY_LEFT : KEY_RIGHT;
+                    emit(kbd_fd, EV_KEY, KEY_LEFTCTRL, 1); emit(kbd_fd, EV_KEY, key, 1); syn(kbd_fd);
+                    emit(kbd_fd, EV_KEY, key, 0); emit(kbd_fd, EV_KEY, KEY_LEFTCTRL, 0); syn(kbd_fd);
+                    last_wheel_combo = now;
+                }
+                continue;
             }
             if (ev->type == EV_KEY && (ev->code == BTN_MIDDLE || ev->code == BTN_SIDE)) {
                 bool *swallowed = ev->code == BTN_MIDDLE ? &swallowed_middle : &swallowed_side;
