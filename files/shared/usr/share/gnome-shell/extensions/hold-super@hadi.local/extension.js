@@ -1,10 +1,11 @@
 // Hold Super — GNOME Shell 50/51 (ESM).
 //
-// Front end for the holdsuper daemon (~/bazzite-system/portable/holdsuper): the daemon does the
+// Front end for the holdsuper daemon (files/src/holdsuper in the image): the daemon does the
 // tap/hold on the mouse itself, this extension only tells it two things over
 // $XDG_RUNTIME_DIR/holdsuper.sock:
 //
-//   - the settings (hold threshold, whether a lone hold opens Activities), and
+//   - the settings (hold threshold, whether a lone hold opens Activities, whether the middle and other
+//     side button become minimize and close during a hold), and
 //   - "pass 1" whenever a game is focused, "pass 0" otherwise. In pass mode the daemon closes the
 //     mouse device, so a game sees the stock kernel -> libinput -> Mutter path with nothing added.
 //
@@ -23,8 +24,11 @@
 
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 const SOCKET_NAME = 'holdsuper.sock';
 const RETRY_SECONDS = 2;
@@ -66,6 +70,23 @@ function processLooksLikeGame(pid) {
     return false;
 }
 
+const POINTER_WINDOW_TYPES = [Meta.WindowType.NORMAL, Meta.WindowType.DIALOG, Meta.WindowType.MODAL_DIALOG,
+    Meta.WindowType.UTILITY];
+
+function windowUnderPointer() {
+    const [x, y] = global.get_pointer();
+    const actors = global.get_window_actors();
+    for (let i = actors.length - 1; i >= 0; i--) {
+        const win = actors[i].get_meta_window();
+        if (!win || !actors[i].visible || win.minimized || !win.showing_on_its_workspace())
+            continue;
+        const r = win.get_frame_rect();
+        if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+            return POINTER_WINDOW_TYPES.includes(win.get_window_type()) ? win : null;
+    }
+    return null;
+}
+
 export default class HoldSuperExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
@@ -80,10 +101,23 @@ export default class HoldSuperExtension extends Extension {
         this._settingsIds = [
             this._settings.connect('changed::hold-ms', () => this._sendSettings()),
             this._settings.connect('changed::overview-on-release', () => this._sendSettings()),
+            this._settings.connect('changed::window-actions', () => this._sendSettings()),
             this._settings.connect('changed::fullscreen-is-game', () => this._update()),
             this._settings.connect('changed::game-classes', () => this._update()),
         ];
         this._focusId = global.display.connect('notify::focus-window', () => this._onFocus());
+
+        const mode = Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW;
+        Main.wm.addKeybinding('minimize-under-pointer', this._settings, Meta.KeyBindingFlags.NONE, mode, () => {
+            const win = windowUnderPointer();
+            if (win?.can_minimize())
+                win.minimize();
+        });
+        Main.wm.addKeybinding('close-under-pointer', this._settings, Meta.KeyBindingFlags.NONE, mode, () => {
+            const win = windowUnderPointer();
+            if (win?.can_close())
+                win.delete(global.get_current_time());
+        });
 
         this._onFocus();
         this._connect();
@@ -91,6 +125,8 @@ export default class HoldSuperExtension extends Extension {
 
     disable() {
         global.display.disconnect(this._focusId);
+        Main.wm.removeKeybinding('minimize-under-pointer');
+        Main.wm.removeKeybinding('close-under-pointer');
         this._unwatchWindow();
         for (const id of this._settingsIds)
             this._settings.disconnect(id);
@@ -176,7 +212,8 @@ export default class HoldSuperExtension extends Extension {
     _sendSettings() {
         const hold = this._settings.get_int('hold-ms');
         const overview = this._settings.get_boolean('overview-on-release') ? 1 : 0;
-        this._send(`hold ${hold}\noverview ${overview}\n`);
+        const combos = this._settings.get_boolean('window-actions') ? 1 : 0;
+        this._send(`hold ${hold}\noverview ${overview}\ncombos ${combos}\n`);
     }
 
     // ── focus / game detection ────────────────────────────────────────────────

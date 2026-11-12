@@ -30,6 +30,13 @@ export default class HoldSuperPreferences extends ExtensionPreferences {
         });
         settings.bind('overview-on-release', overview, 'active', Gio.SettingsBindFlags.DEFAULT);
         hold.add(overview);
+
+        const actions = new Adw.SwitchRow({
+            title: 'Minimize and close from the mouse',
+            subtitle: 'While held: middle button minimizes, the other side button closes the window under the pointer',
+        });
+        settings.bind('window-actions', actions, 'active', Gio.SettingsBindFlags.DEFAULT);
+        hold.add(actions);
         page.add(hold);
 
         const games = new Adw.PreferencesGroup({

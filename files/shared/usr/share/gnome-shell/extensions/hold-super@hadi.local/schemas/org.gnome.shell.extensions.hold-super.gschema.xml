@@ -12,6 +12,21 @@
       <summary>Open Activities on a lone hold</summary>
       <description>Like the Super key on the keyboard: holding past the threshold and releasing without using it opens Activities.</description>
     </key>
+    <key name="window-actions" type="b">
+      <default>true</default>
+      <summary>Minimize and close from the mouse</summary>
+      <description>During a hold, the middle button minimizes and the other side button closes the window under the pointer.</description>
+    </key>
+    <key name="minimize-under-pointer" type="as">
+      <default>['&lt;Super&gt;F12']</default>
+      <summary>Minimize the window under the pointer</summary>
+      <description>The daemon sends this key for the middle button during a hold.</description>
+    </key>
+    <key name="close-under-pointer" type="as">
+      <default>['&lt;Super&gt;q']</default>
+      <summary>Close the window under the pointer</summary>
+      <description>The daemon sends this key for the other side button during a hold.</description>
+    </key>
     <key name="fullscreen-is-game" type="b">
       <default>false</default>
       <summary>Treat every fullscreen window as a game</summary>

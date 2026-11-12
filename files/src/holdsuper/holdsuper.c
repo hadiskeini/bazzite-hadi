@@ -50,12 +50,11 @@ static bool verbose;
 static bool pass = true;          // true = device closed, mouse fully native
 static int hold_ms = 200;
 static bool overview = false;     // let a lone hold-and-release open Activities, like a real Super tap
-// During a hold, the middle button sends Super+F12, the other side button Super+Q, and a wheel step
-// Super+Ctrl+Left or Right, in place of the click or scroll: the desktop binds them to minimize, close and
-// previous or next workspace. For a desktop without mouse buttons in its shortcuts.
+// During a hold, the middle button sends Super+F12 and the other side button Super+Q in place of the click:
+// the extension binds them to minimize and close the window under the pointer. Mutter takes Super+button for
+// its own window grabs, so the extension cannot see the clicks themselves.
 static bool combos = false;
 static bool swallowed_middle, swallowed_side;
-static struct timespec last_wheel_combo;   // one workspace step each 150 ms at most
 
 static int src = -1;              // grabbed source device, -1 while passing through
 static int clone_fd = -1, kbd_fd = -1;
@@ -351,19 +350,6 @@ static void read_source(void) {
                     if (state == PENDING) resolve_hold();
                 }
             }
-            if (combos && state == HELD && ev->type == EV_REL &&
-                (ev->code == REL_WHEEL || ev->code == REL_WHEEL_HI_RES)) {
-                struct timespec now;
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                long ms = (now.tv_sec - last_wheel_combo.tv_sec) * 1000 + (now.tv_nsec - last_wheel_combo.tv_nsec) / 1000000;
-                if (ev->code == REL_WHEEL && ev->value != 0 && ms >= 150) {
-                    int key = ev->value > 0 ? KEY_LEFT : KEY_RIGHT;
-                    emit(kbd_fd, EV_KEY, KEY_LEFTCTRL, 1); emit(kbd_fd, EV_KEY, key, 1); syn(kbd_fd);
-                    emit(kbd_fd, EV_KEY, key, 0); emit(kbd_fd, EV_KEY, KEY_LEFTCTRL, 0); syn(kbd_fd);
-                    last_wheel_combo = now;
-                }
-                continue;
-            }
             if (ev->type == EV_KEY && (ev->code == BTN_MIDDLE || ev->code == BTN_SIDE)) {
                 bool *swallowed = ev->code == BTN_MIDDLE ? &swallowed_middle : &swallowed_side;
                 if (ev->value == 1 && combos && state == HELD) {
@@ -433,8 +419,8 @@ static bool is_front_end_line(const char *line) {
            !strncmp(line, "combos ", 7);
 }
 
-// A new connection replaces the front end only if its first line is a front-end command. A probe (niri-at-pointer
-// sends "ping") must not drop the front end: without one, holdsuper releases the mouse.
+// A new connection replaces the front end only if its first line is a front-end command. A probe (a client
+// that sends "ping") must not drop the front end: without one, holdsuper releases the mouse.
 static void read_pending(void) {
     ssize_t n = read(pending_fd, pending_buf + pending_len, sizeof pending_buf - 1 - pending_len);
     if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
