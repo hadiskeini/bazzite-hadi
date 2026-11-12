@@ -358,6 +358,7 @@ class Glide:
         self.contacts = []   # the last real contacts
         self.hist = []       # (time, x, y) of the two-finger centroid, last frames
         self.held = None     # contacts kept down after the real fingers lifted
+        self.most = 0        # most fingers at once in the touch that is on the trackpad now
         self.lifted = 0.0
         self.moved = 0.0     # last momentum step
         self.pending = [0.0, 0.0]   # momentum not yet applied, touchpad units
@@ -393,12 +394,16 @@ class Glide:
                                            (contacts[0][2] + contacts[1][2]) / 2)])[-5:]
             else:
                 self.hist = []
+            self.most = max(self.most, len(contacts))
             self.contacts = contacts
             self.pad.frame(contacts)
             return
         self.calibrate()
         self.two = None
-        if len(self.contacts) == 2 and len(self.hist) >= 2:
+        # The last two fingers of a swipe are no scroll: held down here, they keep libinput's
+        # gesture open (it waits 100 ms on a changed finger count) and the swipe ends late.
+        scroll, self.most = self.most == 2, 0
+        if scroll and len(self.contacts) == 2 and len(self.hist) >= 2:
             # Two fingers lifted: stay down, macOS's momentum may follow.
             self.held = [list(c) for c in self.contacts]
             self.lifted = now
@@ -539,6 +544,7 @@ class Glide:
 
     def release(self):
         self.held = None
+        self.most = 0
         self.two = None
         self.contacts, self.hist = [], []
 
