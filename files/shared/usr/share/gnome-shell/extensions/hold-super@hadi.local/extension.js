@@ -97,13 +97,15 @@ export default class HoldSuperExtension extends Extension {
         this._sentPass = null;
         this._focusWindow = null;
         this._windowSignals = [];
+        this._gameProcess = new WeakMap();
+        this._readGameSettings();
 
         this._settingsIds = [
             this._settings.connect('changed::hold-ms', () => this._sendSettings()),
             this._settings.connect('changed::overview-on-release', () => this._sendSettings()),
             this._settings.connect('changed::window-actions', () => this._sendSettings()),
-            this._settings.connect('changed::fullscreen-is-game', () => this._update()),
-            this._settings.connect('changed::game-classes', () => this._update()),
+            this._settings.connect('changed::fullscreen-is-game', () => this._readGameSettings()),
+            this._settings.connect('changed::game-classes', () => this._readGameSettings()),
         ];
         this._focusId = global.display.connect('notify::focus-window', () => this._onFocus());
 
@@ -242,16 +244,30 @@ export default class HoldSuperExtension extends Extension {
         this._windowSignals = [];
     }
 
+    _readGameSettings() {
+        this._gameClasses = this._settings.get_strv('game-classes').map(c => c.trim().toLowerCase());
+        this._fullscreenIsGame = this._settings.get_boolean('fullscreen-is-game');
+        this._update();
+    }
+
     _isGame(win) {
         const cls = (win.get_wm_class() ?? '').toLowerCase();
         if (/^steam_app_\d+$/.test(cls) || cls.endsWith('.exe'))
             return true;
-        if (cls && this._settings.get_strv('game-classes').some(c => c.trim().toLowerCase() === cls))
+        if (cls && this._gameClasses.includes(cls))
             return true;
-        if (this._settings.get_boolean('fullscreen-is-game') && win.is_fullscreen())
+        if (this._fullscreenIsGame && win.is_fullscreen())
             return true;
         const pid = win.get_pid();
-        return pid > 0 && processLooksLikeGame(pid);
+        if (pid <= 0)
+            return false;
+        // A window's process and its ancestors do not change, so /proc is read once per window.
+        const known = this._gameProcess.get(win);
+        if (known?.pid === pid)
+            return known.game;
+        const game = processLooksLikeGame(pid);
+        this._gameProcess.set(win, {pid, game});
+        return game;
     }
 
     _update() {
