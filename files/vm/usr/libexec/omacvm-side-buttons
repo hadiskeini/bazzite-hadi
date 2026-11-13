@@ -4,8 +4,11 @@
 F18 = back button: BTN_SIDE, pressed and released with the key.
 F19 = forward button: tap = BTN_EXTRA; held past hold_ms, or another button or the
 wheel used while it is down = Super, like holdsuper on the PC.
+F16 = middle button while forward is held (side-buttons.lua sends it only then).
+During a hold, with combos on, middle sends Super+F12 and back sends Super+Q: the extension
+minimizes and closes the window under the pointer, as with holdsuper on the PC.
 Settings come from the hold-super extension over $XDG_RUNTIME_DIR/holdsuper.sock
-("hold <ms>", "overview 0|1"); "pass" is ignored: the VM runs no games.
+("hold <ms>", "overview 0|1", "combos 0|1"); "pass" is ignored: the VM runs no games.
 With no extension connected, Super goes down at once on the press, so the first
 wheel notch already has Super; a tap still releases Super and then clicks BTN_EXTRA.
 F17 = Caps Lock (mac/caps-lock.lua): a held Caps Lock, so the session's xkb option
@@ -18,19 +21,22 @@ import os
 import evdev
 from evdev import ecodes as e
 
-KEY_BACK, KEY_FWD, KEY_CAPS = e.KEY_F18, e.KEY_F19, e.KEY_F17
+KEY_BACK, KEY_FWD, KEY_CAPS, KEY_MID = e.KEY_F18, e.KEY_F19, e.KEY_F17, e.KEY_F16
 OWN = "omacvm-side-buttons"
 SUPER = e.KEY_LEFTMETA
 PICK = e.BTN_TASK
-hold_ms, overview = 200, False
+hold_ms, overview, combos = 200, False, False
 
-kbd = evdev.UInput({e.EV_KEY: [SUPER, e.KEY_CAPSLOCK]}, name=f"{OWN} Super key")
+kbd = evdev.UInput({e.EV_KEY: [SUPER, e.KEY_CAPSLOCK, e.KEY_F12, e.KEY_Q]}, name=f"{OWN} Super key")
 # libinput takes a device for a pointer only with relative axes.
 mouse = evdev.UInput({e.EV_KEY: [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE, e.BTN_SIDE, e.BTN_EXTRA, PICK],
                       e.EV_REL: [e.REL_X, e.REL_Y]}, name=f"{OWN} buttons")
 
 state, used, timer = "idle", False, None
 super_down, clients = False, 0
+# A button whose press became a combo key: its release is dropped. A middle press sent as
+# BTN_MIDDLE (no hold) is released as BTN_MIDDLE.
+swallowed = set()
 
 
 def tap(dev, code, value):
@@ -90,6 +96,22 @@ async def toggle_overview():
                 "<false>" if active else "<true>")
 
 
+def combo(key):
+    other_input()
+    tap(kbd, key, 1)
+    tap(kbd, key, 0)
+
+
+def button(code, value, key):
+    if value == 1 and combos and state != "idle":
+        swallowed.add(code)
+        combo(key)
+    elif value == 0 and code in swallowed:
+        swallowed.discard(code)
+    else:
+        tap(mouse, code, value)
+
+
 def other_input():
     global used
     if state != "idle":
@@ -104,7 +126,9 @@ async def watch(dev):
             if ev.type == e.EV_KEY and ev.code == KEY_FWD:
                 forward(ev.value)
             elif ev.type == e.EV_KEY and ev.code == KEY_BACK and ev.value in (0, 1):
-                tap(mouse, e.BTN_SIDE, ev.value)
+                button(e.BTN_SIDE, ev.value, e.KEY_Q)
+            elif ev.type == e.EV_KEY and ev.code == KEY_MID and ev.value in (0, 1):
+                button(e.BTN_MIDDLE, ev.value, e.KEY_F12)
             elif ev.type == e.EV_KEY and ev.code == KEY_CAPS and ev.value in (0, 1):
                 tap(kbd, e.KEY_CAPSLOCK, ev.value)
                 if ev.value:
@@ -133,7 +157,7 @@ async def scan():
 
 
 async def client(reader, writer):
-    global hold_ms, overview, clients
+    global hold_ms, overview, combos, clients
     extension = False   # a ping or click connection must not turn off Super at once
     try:
         async for line in reader:
@@ -152,9 +176,13 @@ async def client(reader, writer):
                 hold_ms = int(arg)
             elif cmd == "overview" and arg in ("0", "1"):
                 overview = arg == "1"
+            elif cmd == "combos" and arg in ("0", "1"):
+                combos = arg == "1"
     finally:
         if extension:
             clients -= 1
+            if not clients:
+                combos = False
         writer.close()
 
 

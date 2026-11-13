@@ -30,7 +30,7 @@ guest agents in `files/vm`. Home config is in `~/home` (host `vm-silverblue`); t
 |---|---|---|
 | The Mac's settings at start | `omacvm-app-host` (system) | SMBIOS strings to `/run/omacvm/host.env`: Ghostty's GPU switch, FullPanel, Vulkan windows. |
 | Trackpad gestures | `omacvm-gestures` (system) | A three-finger tap is a middle click (`OMACVM_TAP3_TIME`, `OMACVM_TAP3_MOVE`); keep tap-to-click off. |
-| Mouse side buttons, Caps Lock | `omacvm-side-buttons` (user) | Needs `mac/side-buttons.lua` and `mac/caps-lock.lua` in Hammerspoon. |
+| Mouse side buttons, Caps Lock | `omacvm-side-buttons` (user) | Needs `mac/side-buttons.lua` and `mac/caps-lock.lua` in Hammerspoon. Same as holdsuper on the PC, with the minimize and close combos (middle arrives as F16 during a hold); no game pass mode. |
 | Mac camera, Mac USB webcam | `omacvm-camera`, `omacvm-usbcam` (user), v4l2loopback | `/dev/video42` "Mac Camera", `/dev/video43` "USB Camera" (needs `mac/webcam.lua`). |
 | Sound delay | `omacvm-audio-latency` (user, and the app through the guest agent) | The app calls `/usr/local/bin/omacvm-audio-latency`: a tmpfiles link to `/usr/libexec/qemu-ga/fsfreeze-hook.d/`, where Fedora's policy gives the label the agent may run. The freeze hook runs only `/etc/qemu-ga/fsfreeze-hook.d`. |
 | Mac folder at `~/Mac` | `omacvm-mac-folder` (system) | virtio-9p, when the app shares a folder. |
