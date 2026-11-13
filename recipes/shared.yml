@@ -54,7 +54,6 @@ modules:
       - 307    # Dash to Dock
       - 352    # Quick Close in Overview (middleclickclose)
       - 3960   # Transparent Top Bar (Adjustable transparency)
-      - 6248   # Top Panel Notification Icons Revived
       # Not yet: no GNOME 51 version on extensions.gnome.org. They stay user-installed (gnome-extensions.txt)
       # until one is listed: Clipboard Indicator, PiP on top (4691), Quick Settings Audio Devices Hider (5964).
 
