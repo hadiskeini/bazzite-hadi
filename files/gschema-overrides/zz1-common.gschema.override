@@ -1,0 +1,4 @@
+# Shared by every image (Bazzite and vm-silverblue).
+
+[org.gnome.mutter.experimental]
+autoclose-xwayland=true

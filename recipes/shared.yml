@@ -59,6 +59,7 @@ modules:
 
   - type: gschema-overrides
     include:
+      - zz1-common.gschema.override
       - zz1-hadi.gschema.override
 
   - type: systemd

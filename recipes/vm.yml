@@ -41,6 +41,9 @@ stages:
 
 modules:
   - from-file: vm-host.yml
+  - type: gschema-overrides
+    include:
+      - zz1-common.gschema.override
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:
