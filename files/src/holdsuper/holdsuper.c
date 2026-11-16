@@ -1,6 +1,7 @@
 // holdsuper — tap/hold for one mouse button: tap = the button itself, hold = Super.
 //
-// Grabs the mouse's pointer node, forwards every event verbatim to a uinput clone with identical
+// Grabs every pointer node of the mouse (the Scyrox dongle has two, and the one that carries the events
+// is not fixed), forwards every event verbatim to a uinput clone per node with identical
 // capabilities (hi-res wheel kept, no ABS axes, so no phantom joystick), and swallows one button:
 // released before the threshold -> the clone emits a normal click of that button; held past it,
 // or another button/wheel used while it is down -> a separate uinput keyboard holds Super.
@@ -38,6 +39,7 @@
 
 #define PHYS_TAG "holdsuper"
 #define MAX_IDS 8
+#define MAX_SRC 4
 #define NBITS(x) ((((x) - 1) / (8 * sizeof(unsigned long))) + 1)
 #define TEST_BIT(bit, arr) (((arr)[(bit) / (8 * sizeof(unsigned long))] >> ((bit) % (8 * sizeof(unsigned long)))) & 1UL)
 
@@ -56,17 +58,25 @@ static bool overview = false;     // let a lone hold-and-release open Activities
 static bool combos = false;
 static bool swallowed_middle, swallowed_side;
 
-static int src = -1;              // grabbed source device, -1 while passing through
-static int clone_fd = -1, kbd_fd = -1;
-static unsigned short clone_vendor, clone_product;
+// A clone outlives pass mode and is reused when the node with the same phys comes back.
+struct source {
+    int fd;                                   // grabbed node, -1 while passing through
+    dev_t rdev;
+    int clone;
+    char phys[64];
+    unsigned long keys[NBITS(KEY_CNT)];       // buttons the clone currently reports down
+    bool dropping;                            // SYN_DROPPED seen, skipping to the next SYN_REPORT
+};
+static struct source srcs[MAX_SRC] = {[0 ... MAX_SRC - 1] = {.fd = -1, .clone = -1}};
+static struct source *btn_src;    // node the held button went down on
+static int settle_ticks;          // rescans after a new grab, for nodes that enumerate a moment later
+static int kbd_fd = -1;
 static int timer_fd = -1, listen_fd = -1, client_fd = -1, pending_fd = -1;
 static char client_buf[256], pending_buf[256];
 static size_t client_len, pending_len;
 
 static enum { IDLE, PENDING, HELD } state = IDLE;
 static bool used;                 // another button/wheel happened during the hold
-static bool dropping;             // SYN_DROPPED seen, skipping to the next SYN_REPORT
-static unsigned long clone_keys[NBITS(KEY_CNT)];  // buttons the clone currently reports down
 static bool want_grab_retry;      // device missing or a button held: retry each second
 
 static volatile sig_atomic_t quit;
@@ -87,10 +97,10 @@ static void emit(int fd, int type, int code, int value) {
 }
 static void syn(int fd) { emit(fd, EV_SYN, SYN_REPORT, 0); }
 
-static void set_clone_key(int code, int value) {
+static void set_clone_key(struct source *s, int code, int value) {
     unsigned long m = 1UL << (code % (8 * sizeof(unsigned long)));
-    if (value) clone_keys[code / (8 * sizeof(unsigned long))] |= m;
-    else clone_keys[code / (8 * sizeof(unsigned long))] &= ~m;
+    if (value) s->keys[code / (8 * sizeof(unsigned long))] |= m;
+    else s->keys[code / (8 * sizeof(unsigned long))] &= ~m;
 }
 
 // ---------------------------------------------------------------- uinput devices
@@ -150,24 +160,51 @@ static int make_clone(int s) {
         close(fd);
         return -1;
     }
-    clone_vendor = id.vendor;
-    clone_product = id.product;
-    memset(clone_keys, 0, sizeof clone_keys);
     logmsg("clone created for \"%s\" %04x:%04x", name, id.vendor, id.product);
     return fd;
 }
 
 // ---------------------------------------------------------------- source device
 
-static int find_source(void) {
+static bool any_button_down(int fd);
+static void release_all(void);
+
+static int n_grabbed(void) {
+    int n = 0;
+    for (int i = 0; i < MAX_SRC; i++) n += srcs[i].fd >= 0;
+    return n;
+}
+
+static struct source *slot_for(const char *phys) {
+    for (int i = 0; i < MAX_SRC; i++)
+        if (srcs[i].fd < 0 && srcs[i].clone >= 0 && !strcmp(srcs[i].phys, phys)) return &srcs[i];
+    for (int i = 0; i < MAX_SRC; i++)
+        if (srcs[i].fd < 0 && srcs[i].clone < 0) return &srcs[i];
+    for (int i = 0; i < MAX_SRC; i++)
+        if (srcs[i].fd < 0) {
+            ioctl(srcs[i].clone, UI_DEV_DESTROY);
+            close(srcs[i].clone);
+            srcs[i].clone = -1;
+            return &srcs[i];
+        }
+    return NULL;
+}
+
+// Grab each matching node that is not grabbed yet. A node with a button physically down is left for the
+// next tick: a press libinput saw would otherwise never see its release and stay stuck.
+static void scan_sources(void) {
     DIR *d = opendir("/dev/input");
-    if (!d) return -1;
+    if (!d) return;
     struct dirent *e;
-    int found = -1;
-    while (found < 0 && (e = readdir(d))) {
+    while ((e = readdir(d))) {
         if (strncmp(e->d_name, "event", 5)) continue;
         char path[PATH_MAX];
         snprintf(path, sizeof path, "/dev/input/%s", e->d_name);
+        struct stat st;
+        if (stat(path, &st) < 0) continue;
+        bool have = false;
+        for (int i = 0; i < MAX_SRC; i++) have |= srcs[i].fd >= 0 && srcs[i].rdev == st.st_rdev;
+        if (have) continue;
         int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) continue;
         struct input_id id;
@@ -184,11 +221,30 @@ static int find_source(void) {
         }
         ok = ok && ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys) >= 0 && TEST_BIT(button, keys)
                 && ioctl(fd, EVIOCGBIT(EV_REL, sizeof rels), rels) >= 0 && TEST_BIT(REL_X, rels);
-        if (ok) { found = fd; dbg("source: %s", path); }
-        else close(fd);
+        if (!ok) { close(fd); continue; }
+        if (any_button_down(fd)) { close(fd); want_grab_retry = true; continue; }
+        struct source *s = slot_for(phys);
+        if (!s) { close(fd); continue; }
+        if (s->clone < 0) {
+            snprintf(s->phys, sizeof s->phys, "%s", phys);
+            memset(s->keys, 0, sizeof s->keys);
+            if ((s->clone = make_clone(fd)) < 0) { close(fd); want_grab_retry = true; continue; }
+        }
+        if (ioctl(fd, EVIOCGRAB, 1) < 0) {
+            logmsg("grab %s: %s", path, strerror(errno));
+            close(fd);
+            want_grab_retry = true;
+            continue;
+        }
+        // drain whatever queued up before the grab
+        struct input_event evs[64];
+        while (read(fd, evs, sizeof evs) > 0) {}
+        s->fd = fd;
+        s->rdev = st.st_rdev;
+        s->dropping = false;
+        logmsg("grabbed %s (%s)", path, phys);
     }
     closedir(d);
-    return found;
 }
 
 static bool any_button_down(int fd) {
@@ -209,59 +265,48 @@ static void release_all(void) {
     disarm_timer();
     if (state == HELD) { emit(kbd_fd, EV_KEY, KEY_LEFTMETA, 0); syn(kbd_fd); }
     state = IDLE;
-    if (clone_fd >= 0) {
+    btn_src = NULL;
+    for (int i = 0; i < MAX_SRC; i++) {
+        struct source *s = &srcs[i];
+        if (s->clone < 0) continue;
         bool any = false;
         for (int c = 0; c < KEY_CNT; c++)
-            if (TEST_BIT(c, clone_keys)) { emit(clone_fd, EV_KEY, c, 0); any = true; }
-        if (any) syn(clone_fd);
-        memset(clone_keys, 0, sizeof clone_keys);
+            if (TEST_BIT(c, s->keys)) { emit(s->clone, EV_KEY, c, 0); any = true; }
+        if (any) syn(s->clone);
+        memset(s->keys, 0, sizeof s->keys);
     }
 }
 
-static void close_source(void) {
-    if (src < 0) return;
+static void close_sources(void) {
+    if (!n_grabbed()) return;
     release_all();
-    ioctl(src, EVIOCGRAB, 0);
-    close(src);
-    src = -1;
+    for (int i = 0; i < MAX_SRC; i++) {
+        if (srcs[i].fd < 0) continue;
+        ioctl(srcs[i].fd, EVIOCGRAB, 0);
+        close(srcs[i].fd);
+        srcs[i].fd = -1;
+    }
     logmsg("released mouse (native path)");
 }
 
-// Grab only when no button is physically down: a press libinput saw would otherwise never see its
-// release and stay stuck. If something is held, try again on the next one-second tick.
 static void try_grab(void) {
     want_grab_retry = false;
-    if (src >= 0 || pass) return;
-    int fd = find_source();
-    if (fd < 0) { want_grab_retry = true; return; }
-    if (any_button_down(fd)) { close(fd); want_grab_retry = true; return; }
-    struct input_id id;
-    ioctl(fd, EVIOCGID, &id);
-    if (clone_fd >= 0 && (id.vendor != clone_vendor || id.product != clone_product)) {
-        ioctl(clone_fd, UI_DEV_DESTROY);
-        close(clone_fd);
-        clone_fd = -1;
+    if (pass) return;
+    int before = n_grabbed();
+    scan_sources();
+    int after = n_grabbed();
+    if (after > before) {
+        if (!before) logmsg("grabbed mouse (tap/hold active, hold %d ms)", hold_ms);
+        settle_ticks = 3;
     }
-    if (clone_fd < 0 && (clone_fd = make_clone(fd)) < 0) { close(fd); want_grab_retry = true; return; }
-    if (ioctl(fd, EVIOCGRAB, 1) < 0) {
-        logmsg("grab: %s", strerror(errno));
-        close(fd);
-        want_grab_retry = true;
-        return;
-    }
-    // drain whatever queued up before the grab
-    struct input_event evs[64];
-    while (read(fd, evs, sizeof evs) > 0) {}
-    src = fd;
-    state = IDLE;
-    dropping = false;
-    logmsg("grabbed mouse (tap/hold active, hold %d ms)", hold_ms);
+    if (!after) want_grab_retry = true;
+    else if (settle_ticks > 0) { settle_ticks--; want_grab_retry = true; }
 }
 
 static void set_pass(bool p) {
     if (p == pass) return;
     pass = p;
-    if (pass) close_source();
+    if (pass) close_sources();
     else try_grab();
 }
 
@@ -275,18 +320,19 @@ static void resolve_hold(void) {
     dbg("hold -> Super down");
 }
 
-static void on_button(int value) {
+static void on_button(struct source *s, int value) {
     if (value == 1) {
         if (state != IDLE) return;
         state = PENDING;
+        btn_src = s;
         used = false;
         struct itimerspec its = {.it_value = {.tv_sec = hold_ms / 1000, .tv_nsec = (long)(hold_ms % 1000) * 1000000L}};
         timerfd_settime(timer_fd, 0, &its, NULL);
     } else if (value == 0) {
         if (state == PENDING) {
             disarm_timer();
-            emit(clone_fd, EV_KEY, button, 1); syn(clone_fd);
-            emit(clone_fd, EV_KEY, button, 0); syn(clone_fd);
+            emit(btn_src->clone, EV_KEY, button, 1); syn(btn_src->clone);
+            emit(btn_src->clone, EV_KEY, button, 0); syn(btn_src->clone);
             dbg("tap -> button %d", button);
         } else if (state == HELD) {
             // Mutter opens Activities when Super goes down and up with nothing in between; any other
@@ -300,34 +346,35 @@ static void on_button(int value) {
             dbg("release -> Super up");
         }
         state = IDLE;
+        btn_src = NULL;
     }
     // value 2 (autorepeat) is ignored
 }
 
 // After SYN_DROPPED: make the clone's button state match the hardware again.
-static void resync(void) {
+static void resync(struct source *s) {
     unsigned long keys[NBITS(KEY_CNT)] = {0};
-    if (ioctl(src, EVIOCGKEY(sizeof keys), keys) < 0) return;
+    if (ioctl(s->fd, EVIOCGKEY(sizeof keys), keys) < 0) return;
     bool any = false;
     for (int c = 0; c < KEY_CNT; c++) {
         if (c == button) continue;
-        bool hw = TEST_BIT(c, keys), cl = TEST_BIT(c, clone_keys);
-        if (hw != cl) { emit(clone_fd, EV_KEY, c, hw); set_clone_key(c, hw); any = true; }
+        bool hw = TEST_BIT(c, keys), cl = TEST_BIT(c, s->keys);
+        if (hw != cl) { emit(s->clone, EV_KEY, c, hw); set_clone_key(s, c, hw); any = true; }
     }
-    if (any) syn(clone_fd);
-    if (!TEST_BIT(button, keys) && state != IDLE) on_button(0);
+    if (any) syn(s->clone);
+    if (!TEST_BIT(button, keys) && state != IDLE && btn_src == s) on_button(s, 0);
 }
 
-static void read_source(void) {
+static void read_source(struct source *s) {
     struct input_event evs[256];
     for (;;) {
-        ssize_t n = read(src, evs, sizeof evs);
+        ssize_t n = read(s->fd, evs, sizeof evs);
         if (n < 0) {
             if (errno == EAGAIN || errno == EINTR) return;
-            logmsg("mouse read: %s (unplugged?)", strerror(errno));
+            logmsg("mouse read %s: %s (unplugged?)", s->phys, strerror(errno));
             release_all();
-            close(src);
-            src = -1;
+            close(s->fd);
+            s->fd = -1;
             want_grab_retry = true;
             return;
         }
@@ -335,12 +382,12 @@ static void read_source(void) {
         size_t count = (size_t)n / sizeof *evs;
         for (size_t i = 0; i < count; i++) {
             struct input_event *ev = &evs[i];
-            if (ev->type == EV_SYN && ev->code == SYN_DROPPED) { dropping = true; continue; }
-            if (dropping) {
-                if (ev->type == EV_SYN && ev->code == SYN_REPORT) { dropping = false; resync(); }
+            if (ev->type == EV_SYN && ev->code == SYN_DROPPED) { s->dropping = true; continue; }
+            if (s->dropping) {
+                if (ev->type == EV_SYN && ev->code == SYN_REPORT) { s->dropping = false; resync(s); }
                 continue;
             }
-            if (ev->type == EV_KEY && ev->code == button) { on_button(ev->value); continue; }
+            if (ev->type == EV_KEY && ev->code == button) { on_button(s, ev->value); continue; }
             if (state != IDLE) {
                 bool other = (ev->type == EV_KEY && ev->value == 1) ||
                              (ev->type == EV_REL && (ev->code == REL_WHEEL || ev->code == REL_HWHEEL ||
@@ -361,8 +408,8 @@ static void read_source(void) {
                 }
                 if (ev->value == 0 && *swallowed) { *swallowed = false; continue; }
             }
-            if (ev->type == EV_KEY) set_clone_key(ev->code, ev->value);
-            if (write(clone_fd, ev, sizeof *ev) != sizeof *ev && errno != EAGAIN)
+            if (ev->type == EV_KEY) set_clone_key(s, ev->code, ev->value);
+            if (write(s->clone, ev, sizeof *ev) != sizeof *ev && errno != EAGAIN)
                 logmsg("clone write: %s", strerror(errno));
         }
     }
@@ -506,11 +553,13 @@ int main(int argc, char **argv) {
     logmsg("holdsuper ready: button %d, waiting for the extension", button);
 
     while (!quit) {
-        struct pollfd pf[5];
-        int n = 0, i_src = -1, i_client = -1, i_pending = -1;
+        struct pollfd pf[4 + MAX_SRC];
+        struct source *pf_src[4 + MAX_SRC] = {0};
+        int n = 0, i_client = -1, i_pending = -1;
         pf[n++] = (struct pollfd){.fd = listen_fd, .events = POLLIN};
         pf[n++] = (struct pollfd){.fd = timer_fd, .events = POLLIN};
-        if (src >= 0) { i_src = n; pf[n++] = (struct pollfd){.fd = src, .events = POLLIN}; }
+        for (int i = 0; i < MAX_SRC; i++)
+            if (srcs[i].fd >= 0) { pf_src[n] = &srcs[i]; pf[n++] = (struct pollfd){.fd = srcs[i].fd, .events = POLLIN}; }
         if (client_fd >= 0) { i_client = n; pf[n++] = (struct pollfd){.fd = client_fd, .events = POLLIN}; }
         if (pending_fd >= 0) { i_pending = n; pf[n++] = (struct pollfd){.fd = pending_fd, .events = POLLIN}; }
 
@@ -522,7 +571,8 @@ int main(int argc, char **argv) {
             uint64_t exp;
             if (read(timer_fd, &exp, sizeof exp) == sizeof exp && state == PENDING) resolve_hold();
         }
-        if (i_src >= 0 && pf[i_src].revents) read_source();
+        for (int i = 0; i < n; i++)
+            if (pf_src[i] && pf_src[i]->fd >= 0 && pf[i].revents) read_source(pf_src[i]);
         if (i_client >= 0 && pf[i_client].revents) read_client();
         if (i_pending >= 0 && pf[i_pending].revents) read_pending();
         if (pf[0].revents & POLLIN) {
@@ -535,8 +585,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    close_source();
-    if (clone_fd >= 0) { ioctl(clone_fd, UI_DEV_DESTROY); close(clone_fd); }
+    close_sources();
+    for (int i = 0; i < MAX_SRC; i++)
+        if (srcs[i].clone >= 0) { ioctl(srcs[i].clone, UI_DEV_DESTROY); close(srcs[i].clone); }
     ioctl(kbd_fd, UI_DEV_DESTROY);
     close(kbd_fd);
     return 0;
