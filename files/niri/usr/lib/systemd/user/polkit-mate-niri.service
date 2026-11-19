@@ -1,0 +1,14 @@
+# The polkit agent of the niri session. GNOME has its own; the package's autostart entry is for MATE only.
+[Unit]
+Description=Polkit authentication agent for niri (mate-polkit)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecCondition=/usr/bin/niri msg version
+ExecStart=/usr/libexec/polkit-mate-authentication-agent-1
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=niri.service

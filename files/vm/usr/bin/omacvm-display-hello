@@ -1,0 +1,10 @@
+#!/bin/bash
+# OmacVM.app hides the Mac cursor over the VM only after a hello on its display port. GNOME sends it from
+# the omacvm-integration extension; this sends it for other sessions. It holds the port open while the
+# compositor socket exists: the port takes one opener, and GNOME needs it after the next login.
+set -u
+port=/dev/virtio-ports/org.omacvm.display
+sock=$XDG_RUNTIME_DIR/${WAYLAND_DISPLAY:?}
+exec 3<>"$port" || exit 1
+printf "{\"hello\":1,\"external\":false}\n" >&3
+while [ -S "$sock" ]; do read -r -t 5 -u 3 _ || [ $? -gt 128 ] || break; done

@@ -11,6 +11,7 @@ The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 - `recipes/recipe.yml` — pc-bazzite: base image, build stages, module order
 - `recipes/shared.yml` — preferences valid on any Bazzite machine
 - `recipes/pc.yml` — facts about pc-bazzite (hardware, kernel arguments, masks)
+- `recipes/niri.yml` — both images: the niri session (git build) next to GNOME, with what the own shell Frost needs
 - `recipes/vm.yml` — vm-silverblue: base image, build stages, module order
 - `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM's GPU driver and
   shims, OmacVM udev rules)

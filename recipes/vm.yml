@@ -41,6 +41,7 @@ stages:
 
 modules:
   - from-file: vm-host.yml
+  - from-file: niri.yml
   - type: gschema-overrides
     include:
       - zz1-common.gschema.override
