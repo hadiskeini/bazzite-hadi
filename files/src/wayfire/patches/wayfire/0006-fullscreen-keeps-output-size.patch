@@ -1,0 +1,32 @@
+Fullscreen view keeps the output size when the client commits another size
+
+Problem: a fullscreen view takes any size the client commits as a client-initiated
+resize and then sends that size back in a configure. Wine (winewayland) at scale 1.5
+gets the fractional scale only after the first fullscreen configure, commits a stale
+1707x960 once, and Wayfire then locks the window at 1707x960 (Deadlock, Proton). The
+window does not cover the output, so it also cannot be scanned out. GNOME keeps the
+output size, so the same game is fullscreen there.
+Fix: while the view is fullscreen, treat a commit of another size like a commit of the
+same size: show the buffer, keep the geometry, send no configure.
+Upstream: not reported.
+Remove when: upstream main keeps the size of fullscreen views on client commits. Check:
+start Deadlock (PROTON_ENABLE_WAYLAND=1) at scale 1.5; window-rules/list-views shows
+2560x1440, not 1707x960.
+Base: wayfire 669bbe36.
+
+diff --git a/src/view/xdg-shell/xdg-toplevel.cpp b/src/view/xdg-shell/xdg-toplevel.cpp
+index fff930a5..8c2f524e 100644
+--- a/src/view/xdg-shell/xdg-toplevel.cpp
++++ b/src/view/xdg-shell/xdg-toplevel.cpp
+@@ -193,7 +193,10 @@ void wf::xdg_toplevel_t::handle_surface_commit()
+ 
+     auto toplevel_size =
+         expand_dimensions_by_margins(wf::dimensionsf_t{get_current_wlr_toplevel_size()}, _current.margins);
+-    if ((toplevel_size == wf::fdimensions(current().geometry)) || !current().mapped)
++    // A fullscreen view keeps the output size: a client that commits another size (for example a stale
++    // one, before it handled the latest configure) must not have it adopted and sent back.
++    if ((toplevel_size == wf::fdimensions(current().geometry)) || !current().mapped ||
++        current().fullscreen)
+     {
+         if (toplevel)
+         {
