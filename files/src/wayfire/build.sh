@@ -2,6 +2,7 @@
 # Builds the Wayfire stack from upstream main into /out (a root tree for the image).
 # Fedora's package is stuck at 0.10.1 (non-responsive maintainer). Each repo builds at the commit in its variable
 # (wf_config, wayfire, ...) or else at the head of main. main of each repo expects main of the others.
+# patches/<repo>/*.patch apply on top; a patch that no longer applies fails the build (the image keeps the last stack).
 set -euo pipefail
 
 order=(wf-config wayfire wf-shell wcm wayfire-plugins-extra)
@@ -25,6 +26,9 @@ for name in "${order[@]}"; do
   git -C "$src" checkout -q "${!var:-origin/HEAD}"
   echo "$name $(git -C "$src" rev-parse HEAD)" >> /out/usr/share/wayfire/stack-commits
   git -C "$src" submodule -q update --init --recursive --filter=blob:none
+  for patch in /patches/"$name"/*.patch; do
+    [ -e "$patch" ] && git -C "$src" apply "$patch"
+  done
   meson setup "$src/build" "$src" --prefix=/usr --libdir=lib64 --buildtype=release -Dtests=disabled 2>/dev/null \
     || meson setup "$src/build" "$src" --prefix=/usr --libdir=lib64 --buildtype=release
   meson compile -C "$src/build"

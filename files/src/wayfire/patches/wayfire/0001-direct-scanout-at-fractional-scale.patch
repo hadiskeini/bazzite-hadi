@@ -1,0 +1,20 @@
+diff --git a/src/view/wlr-surface-node.cpp b/src/view/wlr-surface-node.cpp
+index 428f1d15..8ecbac22 100644
+--- a/src/view/wlr-surface-node.cpp
++++ b/src/view/wlr-surface-node.cpp
+@@ -464,9 +464,13 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+             return direct_scanout::OCCLUSION;
+         }
+ 
+-        // Must have a wlr surface with the correct scale and transform
++        // Must have a wlr surface with the correct scale and transform. At a fractional output scale no integer
++        // buffer scale can match: there a buffer of the output's pixel size, not cropped by a viewport, fits.
+         auto wlr_surf = self->surface;
+-        if ((self->current_state.scale != output->handle->scale) ||
++        auto buffer   = self->current_state.current_buffer;
++        const bool pixel_sized = buffer && !self->current_state.src_viewport &&
++            (buffer->width == output->handle->width) && (buffer->height == output->handle->height);
++        if (((self->current_state.scale != output->handle->scale) && !pixel_sized) ||
+             (self->current_state.transform != output->handle->transform))
+         {
+             return direct_scanout::OCCLUSION;

@@ -21,7 +21,7 @@ jobs:
           for repo in wf-config wayfire wf-shell wcm wayfire-plugins-extra; do
             echo "${repo//-/_}=$(git ls-remote "https://github.com/WayfireWM/$repo" HEAD | cut -f1)"
           done | tee heads.env
-          echo "key=$({ cat heads.env; cat files/src/wayfire/*; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "key=$({ cat heads.env; find files/src/wayfire -type f | sort | xargs cat; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
           echo "args=$(sed 's/^/--build-arg /' heads.env | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
   build:
