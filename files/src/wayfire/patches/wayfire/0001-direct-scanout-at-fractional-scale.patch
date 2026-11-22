@@ -1,14 +1,15 @@
 diff --git a/src/view/wlr-surface-node.cpp b/src/view/wlr-surface-node.cpp
-index 428f1d15..8ecbac22 100644
+index 428f1d15..607fc1cb 100644
 --- a/src/view/wlr-surface-node.cpp
 +++ b/src/view/wlr-surface-node.cpp
-@@ -464,9 +464,13 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+@@ -464,9 +464,14 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
              return direct_scanout::OCCLUSION;
          }
  
 -        // Must have a wlr surface with the correct scale and transform
-+        // Must have a wlr surface with the correct scale and transform. At a fractional output scale no integer
-+        // buffer scale can match: there a buffer of the output's pixel size, not cropped by a viewport, fits.
++        // Must have a wlr surface with the correct scale and transform. A fractional output scale has
++        // no integer buffer scale to match: there a buffer of the output's pixel size fits, unless a
++        // viewport crops it.
          auto wlr_surf = self->surface;
 -        if ((self->current_state.scale != output->handle->scale) ||
 +        auto buffer   = self->current_state.current_buffer;
