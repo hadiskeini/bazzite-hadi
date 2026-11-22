@@ -19,6 +19,7 @@ modules:
     install:
       packages:
         - lact                 # replaces the LACT Flatpak and its helper-written /etc unit
+        - papirus-icon-theme   # Papirus-Dark: the parent icon theme of Umber
     remove:
       packages:
         - thermald             # Intel only
