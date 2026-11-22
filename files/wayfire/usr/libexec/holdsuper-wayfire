@@ -4,8 +4,9 @@
 Without a connected front end holdsuper leaves the mouse alone, so the side button would never become Super.
 This one sends "pass 1" while a game is focused and "pass 0" otherwise. Game rules as in the extension:
 app_id steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, or an app_id
-from the extension's game-classes. hold-ms and game-classes come from its GSettings. Focus comes from
-Wayfire's IPC (plugin ipc-rules); layer-shell surfaces (Frost's popovers) do not change the state.
+from the extension's game-classes. hold-ms, game-classes, overview-on-release and window-actions come from its
+GSettings, so the button acts the same in both sessions; wayfire.ini binds what they send (Super alone, Super+F12,
+Super+Q). Focus comes from Wayfire's IPC (plugin ipc-rules); layer-shell surfaces do not change the state.
 """
 import asyncio
 import json
@@ -30,11 +31,15 @@ def setting(key, default):
         return default
     if key == "hold-ms":
         return int(out.split()[-1])
+    if isinstance(default, bool):
+        return out.strip() == "true"
     return [c.lower() for c in re.findall(r"'([^']*)'", out)]
 
 
 HOLD_MS = setting("hold-ms", 200)
 GAME_CLASSES = setting("game-classes", [])
+OVERVIEW = setting("overview-on-release", True)
+COMBOS = setting("window-actions", True)
 
 
 def process_is_game(pid):
@@ -69,7 +74,7 @@ class Daemon:
         while True:
             try:
                 reader, self.writer = await asyncio.open_unix_connection(SOCK)
-                self.send(f"hold {HOLD_MS}\noverview 0\npass {self.passing}\n")
+                self.send(f"hold {HOLD_MS}\noverview {int(OVERVIEW)}\ncombos {int(COMBOS)}\npass {self.passing}\n")
                 await reader.read()
             except OSError:
                 pass
