@@ -1,0 +1,37 @@
+diff --git a/plugins/wm-actions/wm-actions.cpp b/plugins/wm-actions/wm-actions.cpp
+index 78fd871d..c1cc3915 100644
+--- a/plugins/wm-actions/wm-actions.cpp
++++ b/plugins/wm-actions/wm-actions.cpp
+@@ -235,6 +235,24 @@ class wayfire_wm_actions_output_t : public wf::per_output_plugin_instance_t
+         }
+     };
+ 
++    /**
++     * Ensures views marked as above or below before they were mapped (for example by a window rule)
++     * keep that state: mapping re-adds the view to the workspace set node.
++     */
++    wf::signal::connection_t<wf::view_mapped_signal> on_view_mapped_restore_layer =
++        [=] (wf::view_mapped_signal *ev)
++    {
++        if (ev->view->has_data("wm-actions-above"))
++        {
++            wf::scene::readd_front(always_above, ev->view->get_root_node());
++        }
++
++        if (ev->view->has_data("wm-actions-below"))
++        {
++            wf::scene::readd_front(always_below, ev->view->get_root_node());
++        }
++    };
++
+     /**
+      * Ensures views marked as above are still above if they are minimized and
+      * unminimized.
+@@ -500,6 +518,7 @@ class wayfire_wm_actions_output_t : public wf::per_output_plugin_instance_t
+         output->connect(&on_set_above_state_signal);
+         output->connect(&on_set_below_state_signal);
+         output->connect(&on_view_minimized);
++        output->connect(&on_view_mapped_restore_layer);
+         wf::get_core().connect(&on_view_output_changed);
+     }
+ 
