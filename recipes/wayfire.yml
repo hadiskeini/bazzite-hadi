@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
-# Wayfire next to GNOME, with wf-shell, wcm and wayfire-plugins-extra. GNOME stays the default session. Two GDM entries,
-# "Wayfire (OpenGL)" and "Wayfire (Vulkan)", differ only in WLR_RENDERER, to compare the two wlroots renderers.
+# Wayfire next to GNOME in both images (bazzite-hadi x86_64, silverblue-vm aarch64), with wf-shell, wcm and
+# wayfire-plugins-extra. GNOME stays the default session. Two GDM entries, "Wayfire (OpenGL)" and "Wayfire (Vulkan)",
+# differ only in WLR_RENDERER, to compare the two wlroots renderers.
 # The stack is built from upstream main by the wayfire-stack workflow (files/src/wayfire); the commits it holds are
 # in /usr/share/wayfire/stack-commits. The PAM service "frost" is for the lock screen of the own shell Frost.
 modules:
@@ -13,8 +14,8 @@ modules:
     install:
       install-weak-deps: false
       packages:
-        # The libraries the stack links, as resolved with ldd in a plain Fedora 45. Bazzite already has
-        # wireplumber-libs (terra-wireplumber-libs); the ldd check below covers swaps like that.
+        # The libraries the stack links, as resolved with ldd in a plain Fedora 45. Both bases already have
+        # wireplumber-libs (Bazzite: terra-wireplumber-libs); the ldd check below covers swaps like that.
         - alsa-lib
         - atkmm
         - cairomm1.16

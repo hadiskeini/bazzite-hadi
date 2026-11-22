@@ -3,6 +3,7 @@
 Description=holdsuper front end for Wayfire (game detection, pass mode)
 PartOf=wayfire-session.target
 After=wayfire-session.target holdsuper.service
+ConditionPathExists=/usr/bin/holdsuper
 
 [Service]
 ExecStart=/usr/libexec/holdsuper-wayfire

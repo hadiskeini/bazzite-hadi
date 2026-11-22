@@ -43,6 +43,8 @@ jobs:
 
   # vm-silverblue: aarch64, built natively on GitHub's arm64 runner (no emulation).
   silverblue-vm:
+    needs: wayfire-stack
+    if: ${{ !cancelled() }}
     uses: ./.github/workflows/image.yml
     with:
       image: silverblue-vm

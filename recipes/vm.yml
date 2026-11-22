@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
 # vm-silverblue: Fedora Silverblue on aarch64 in OmacVM.app, with the Mac camera module and the VM's system config
-# built in. Built natively on an arm64 runner; shared.yml and pc.yml are Bazzite-only.
+# built in. Built natively on an arm64 runner; shared.yml and pc.yml are Bazzite-only, wayfire.yml is in both images.
 name: silverblue-vm
 description: Fedora Silverblue for vm-silverblue (aarch64) with the Mac camera module and the VM's system config built in
 base-image: quay.io/fedora/fedora-silverblue
@@ -41,6 +41,7 @@ stages:
 
 modules:
   - from-file: vm-host.yml
+  - from-file: wayfire.yml
   - type: gschema-overrides
     include:
       - zz1-common.gschema.override
