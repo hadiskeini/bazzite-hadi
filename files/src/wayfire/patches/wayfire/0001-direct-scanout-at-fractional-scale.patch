@@ -4,33 +4,43 @@ Problem: direct scanout never happens on an output with a fractional scale (DP-3
 at 1.5). The scanout check compares the surface's integer buffer scale with the
 output scale, which can never be equal at 1.5. Every fullscreen game is then
 composited. Present since Wayfire 0.9.0.
-Fix: at a fractional scale, accept a buffer of the output's pixel size, unless a
-viewport crops it.
+Fix: remove the scale check and set buffer_dst_box to the full output, so the
+display hardware scales a buffer of another size; a driver that cannot fails
+the test commit and the frame is composited. Without the box, wlroots would
+show such a buffer unscaled in the top-left corner (amdgpu, Intel skl+ accept
+that). A viewport crop is refused: some drivers ignore the plane's source
+rectangle. Same approach as wlr_scene.
 Upstream: https://github.com/WayfireWM/wayfire/issues/3253 (open). The maintainer
-agreed on 2026-11-22 that the check can be relaxed or removed. PR draft:
-~/Documents/Wayfire direct scanout/pull-request.md; not opened yet.
-Remove when: the fix (or a removal of the scale check) is on main. Check that a
-fullscreen game at scale 1.5 is scanned out directly (no composition).
+agreed on 2026-11-22 to skip the scale check. Reply and PR drafts:
+~/Documents/Wayfire direct scanout/; not posted yet.
+Remove when: the fix is on main. Check: a fullscreen game at scale 1.5 is
+scanned out directly, and a fullscreen client without fractional-scale-v1 fills
+the screen.
 Base: wayfire 669bbe36.
 
 diff --git a/src/view/wlr-surface-node.cpp b/src/view/wlr-surface-node.cpp
-index 428f1d15..607fc1cb 100644
+index 428f1d15..8b392932 100644
 --- a/src/view/wlr-surface-node.cpp
 +++ b/src/view/wlr-surface-node.cpp
-@@ -464,9 +464,14 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+@@ -464,10 +464,10 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
              return direct_scanout::OCCLUSION;
          }
  
 -        // Must have a wlr surface with the correct scale and transform
-+        // Must have a wlr surface with the correct scale and transform. A fractional output scale has
-+        // no integer buffer scale to match: there a buffer of the output's pixel size fits, unless a
-+        // viewport crops it.
++        // The buffer is scaled to the full output, so its scale does not matter. A viewport crop is
++        // not passed on: some drivers ignore the plane's source rectangle.
          auto wlr_surf = self->surface;
 -        if ((self->current_state.scale != output->handle->scale) ||
-+        auto buffer   = self->current_state.current_buffer;
-+        const bool pixel_sized = buffer && !self->current_state.src_viewport &&
-+            (buffer->width == output->handle->width) && (buffer->height == output->handle->height);
-+        if (((self->current_state.scale != output->handle->scale) && !pixel_sized) ||
-             (self->current_state.transform != output->handle->transform))
+-            (self->current_state.transform != output->handle->transform))
++        if ((self->current_state.transform != output->handle->transform) || self->current_state.src_viewport)
          {
              return direct_scanout::OCCLUSION;
+         }
+@@ -499,6 +499,7 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+         wlr_output_state state;
+         wlr_output_state_init(&state);
+         wlr_output_state_set_buffer(&state, self->current_state.current_buffer);
++        state.buffer_dst_box = {0, 0, output->handle->width, output->handle->height};
+         if (self->current_state.acquire_point)
+         {
+             wlr_output_state_set_wait_timeline(&state,
