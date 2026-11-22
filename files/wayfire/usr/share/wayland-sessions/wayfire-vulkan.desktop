@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Wayfire (Vulkan)
+Comment=Wayfire on the wlroots vulkan renderer
+Exec=env WLR_RENDERER=vulkan wayfire
+TryExec=wayfire
+Type=Application
+DesktopNames=Wayfire;wlroots

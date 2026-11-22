@@ -1,0 +1,73 @@
+name: wayfire-stack
+# Builds the Wayfire stack (files/src/wayfire) from the heads of upstream main, once per set of commits, for x86_64
+# and aarch64. ghcr.io/hadiskeini/wayfire-stack:current is what the images copy; each build gets its own architecture.
+# A failed build leaves current at the last good stack.
+on:
+  workflow_call:
+env:
+  STACK: ghcr.io/hadiskeini/wayfire-stack
+jobs:
+  heads:
+    name: Resolve the heads of main
+    runs-on: ubuntu-24.04
+    outputs:
+      key: ${{ steps.heads.outputs.key }}
+      args: ${{ steps.heads.outputs.args }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: heads
+        run: |
+          set -euo pipefail
+          for repo in wf-config wayfire wf-shell wcm wayfire-plugins-extra; do
+            echo "${repo//-/_}=$(git ls-remote "https://github.com/WayfireWM/$repo" HEAD | cut -f1)"
+          done | tee heads.env
+          echo "key=$({ cat heads.env; cat files/src/wayfire/*; } | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "args=$(sed 's/^/--build-arg /' heads.env | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build the Wayfire stack (${{ matrix.arch }})
+    needs: heads
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ needs.heads.outputs.key }}-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push, unless this architecture is built
+        run: |
+          set -euo pipefail
+          if skopeo inspect --raw "docker://$STACK:$TAG" > /dev/null 2>&1; then exit 0; fi
+          podman build ${{ needs.heads.outputs.args }} -t "$STACK:$TAG" files/src/wayfire
+          podman push "$STACK:$TAG"
+
+  publish:
+    name: Publish the multi-arch stack
+    needs: [heads, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      KEY: ${{ needs.heads.outputs.key }}
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Join both architectures
+        run: |
+          set -euo pipefail
+          podman manifest create "$STACK:$KEY" "docker://$STACK:$KEY-amd64" "docker://$STACK:$KEY-arm64"
+          podman manifest push --all "$STACK:$KEY" "docker://$STACK:$KEY"
+      - name: Move current
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: skopeo copy --all --preserve-digests "docker://$STACK:$KEY" "docker://$STACK:current"

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Wayfire (OpenGL)
+Comment=Wayfire on the wlroots gles2 renderer
+Exec=env WLR_RENDERER=gles2 wayfire
+TryExec=wayfire
+Type=Application
+DesktopNames=Wayfire;wlroots
