@@ -19,16 +19,15 @@ the screen.
 Base: wayfire 669bbe36.
 
 diff --git a/src/view/wlr-surface-node.cpp b/src/view/wlr-surface-node.cpp
-index 428f1d15..8b392932 100644
+index 428f1d1..c69e6fa 100644
 --- a/src/view/wlr-surface-node.cpp
 +++ b/src/view/wlr-surface-node.cpp
-@@ -464,10 +464,10 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+@@ -464,10 +464,9 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
              return direct_scanout::OCCLUSION;
          }
  
 -        // Must have a wlr surface with the correct scale and transform
-+        // The buffer is scaled to the full output, so its scale does not matter. A viewport crop is
-+        // not passed on: some drivers ignore the plane's source rectangle.
++        // Must have the output's transform and no viewport crop: some drivers ignore the source rectangle
          auto wlr_surf = self->surface;
 -        if ((self->current_state.scale != output->handle->scale) ||
 -            (self->current_state.transform != output->handle->transform))
@@ -36,7 +35,7 @@ index 428f1d15..8b392932 100644
          {
              return direct_scanout::OCCLUSION;
          }
-@@ -499,6 +499,7 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+@@ -499,6 +498,7 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
          wlr_output_state state;
          wlr_output_state_init(&state);
          wlr_output_state_set_buffer(&state, self->current_state.current_buffer);
