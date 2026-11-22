@@ -26,7 +26,10 @@ if [ "${lock%-*}" != "$HOSTNAME" ] || [ "$(readlink "/proc/$pid/exe" 2>/dev/null
 fi
 
 # HEVC/H.265 via VA-API on radeonsi (iOS screen recordings). VaapiVideoDecodeLinuxGL does not work for this.
+# The keyring is set, not detected: Brave picks it from the desktop name and, on a desktop it does not know
+# (Wayfire), falls back to a fixed key that cannot read the passwords, cookies and sync key stored under GNOME.
 exec "@BRAVE_DIR@/brave" \
   --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,WaylandOverlayDelegation \
   --enable-zero-copy \
+  --password-store=gnome-libsecret \
   "$@"
