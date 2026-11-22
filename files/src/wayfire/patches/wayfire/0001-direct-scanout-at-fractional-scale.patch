@@ -1,3 +1,18 @@
+Direct scanout at a fractional output scale
+
+Problem: direct scanout never happens on an output with a fractional scale (DP-3
+at 1.5). The scanout check compares the surface's integer buffer scale with the
+output scale, which can never be equal at 1.5. Every fullscreen game is then
+composited. Present since Wayfire 0.9.0.
+Fix: at a fractional scale, accept a buffer of the output's pixel size, unless a
+viewport crops it.
+Upstream: https://github.com/WayfireWM/wayfire/issues/3253 (open). The maintainer
+agreed on 2026-11-22 that the check can be relaxed or removed. PR draft:
+~/Documents/Wayfire direct scanout/pull-request.md; not opened yet.
+Remove when: the fix (or a removal of the scale check) is on main. Check that a
+fullscreen game at scale 1.5 is scanned out directly (no composition).
+Base: wayfire 669bbe36.
+
 diff --git a/src/view/wlr-surface-node.cpp b/src/view/wlr-surface-node.cpp
 index 428f1d15..607fc1cb 100644
 --- a/src/view/wlr-surface-node.cpp

@@ -1,3 +1,17 @@
+Keep always-on-top (and always-on-bottom) set before the view maps
+
+Problem: a window rule "on created ... then set always_on_top" runs before the
+view maps. At map, adjust_view_output_on_map() re-adds the view to the workspace
+set node, so the view leaves the wm-actions always_above node. The flag stays
+(IPC reports "always-on-top": true), but the view stacks like a normal window.
+Used by: the picture-in-picture rules in ~/home hosts/pc-bazzite/config/wayfire.ini.
+Fix: wm-actions re-adds flagged views to their node on view_mapped.
+Upstream: not reported yet.
+Remove when: upstream keeps the state at map. Check in a nested Wayfire: a rule
+"on created if title is \"PIP\" then set always_on_top" on a small window, then
+open a large window over it; the small window must stay on top without the patch.
+Base: wayfire 669bbe36.
+
 diff --git a/plugins/wm-actions/wm-actions.cpp b/plugins/wm-actions/wm-actions.cpp
 index 78fd871d..c1cc3915 100644
 --- a/plugins/wm-actions/wm-actions.cpp
