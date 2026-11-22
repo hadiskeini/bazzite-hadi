@@ -13,5 +13,6 @@ Each patch starts with a header: the problem, the fix, the upstream status, and 
 | `wayfire/0002-keep-above-state-set-before-map.patch` | `on created` always_on_top is lost at map (PiP rules) | Not reported | Upstream keeps the state at map |
 | `wayfire/0003-fractional-xwayland-cursor-scale.patch` | X cursors scaled by an integer (1.5 → 1): too large or blurry | Not reported | Upstream uses a fractional scale |
 | `wayfire/0004-srgb-in-8-bit-aux-buffers.patch` | Moved/transformed windows change tint (Vulkan, linear values in 8-bit buffers) | Not reported | Upstream picks the encoding by precision |
+| `wayfire/0005-sdr-output-gamma-2.2.patch` | Composited windows have crushed shadows; scanned-out games look muted | Not reported | Upstream encodes SDR outputs with gamma 2.2 |
 
 To remove a patch: delete the file, remove its row here, and remove what depends on it (named in its header).

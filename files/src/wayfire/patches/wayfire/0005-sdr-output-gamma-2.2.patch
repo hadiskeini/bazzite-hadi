@@ -1,0 +1,42 @@
+Encode an SDR output with gamma 2.2, not sRGB
+
+Problem: without an output image description, Wayfire encodes the output with
+the sRGB curve. It advertises gamma 2.2 to clients as the output's preferred
+description, decodes untagged surfaces as gamma 2.2, and its software cursor
+uses gamma 2.2. In dark tones the two curves do not cancel out: every
+composited window is darkened (measured: (30,31,34) shows as (24,25,28)),
+while a directly scanned-out game shows its real values. A fullscreen game
+then looks "muted" next to the desktop, and its colors change when Wayfire
+toggles between scanout and composition.
+Fix: the SDR default transfer function is gamma 2.2, so gamma 2.2 and untagged
+content passes through unchanged and matches direct scanout.
+Upstream: not reported yet.
+Remove when: upstream encodes SDR outputs with gamma 2.2 (or matches what it
+advertises). Check: nested Wayfire with WLR_RENDERER=vulkan, a GTK window with
+background #1e1f22; grim must read (30,31,34).
+Base: wayfire 669bbe36.
+
+diff --git a/src/output/render-manager.cpp b/src/output/render-manager.cpp
+index 830a5d37..cf3a4128 100644
+--- a/src/output/render-manager.cpp
++++ b/src/output/render-manager.cpp
+@@ -783,8 +783,8 @@ class wf::render_manager::impl
+     color_transform_ptr icc_color_transform;
+ 
+     /**
+-     * The transfer function the output expects in its committed image description, or sRGB if no
+-     * image description has been set.
++     * The transfer function the output expects in its committed image description, or gamma 2.2 if no
++     * image description has been set: the value advertised to clients and assumed for untagged surfaces.
+      */
+     wlr_color_transfer_function get_output_transfer_function()
+     {
+@@ -793,7 +793,7 @@ class wf::render_manager::impl
+             return output->handle->image_description->transfer_function;
+         }
+ 
+-        return WLR_COLOR_TRANSFER_FUNCTION_SRGB;
++        return WLR_COLOR_TRANSFER_FUNCTION_GAMMA22;
+     }
+ 
+     /**
