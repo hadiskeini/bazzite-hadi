@@ -43,4 +43,11 @@ modules:
     snippets:
       - mv /etc/pam.d/wf-locker /usr/lib/pam.d/wf-locker
       - rm /usr/share/wayland-sessions/wayfire.desktop
+      # The copied icons are newer than hicolor's cache, but ostree gives every file the same mtime: GTK keeps the old cache.
+      - gtk-update-icon-cache -f /usr/share/icons/hicolor
       - "! find /usr/bin/wayfire /usr/bin/wf-* /usr/bin/wcm /usr/lib64/wayfire -type f -exec ldd {} + 2>/dev/null | grep 'not found'"
+
+  - type: systemd
+    user:
+      enabled:
+        - holdsuper-wayfire.service

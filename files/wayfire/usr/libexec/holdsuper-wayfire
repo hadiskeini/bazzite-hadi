@@ -1,0 +1,119 @@
+#!/usr/bin/python3
+"""Front end for the holdsuper daemon in Wayfire, as hold-super@hadi.local is in GNOME.
+
+Without a connected front end holdsuper leaves the mouse alone, so the side button would never become Super.
+This one sends "pass 1" while a game is focused and "pass 0" otherwise. Game rules as in the extension:
+app_id steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, or an app_id
+from the extension's game-classes. hold-ms and game-classes come from its GSettings. Focus comes from
+Wayfire's IPC (plugin ipc-rules); layer-shell surfaces (Frost's popovers) do not change the state.
+"""
+import asyncio
+import json
+import os
+import re
+import struct
+import subprocess
+
+RUNTIME = os.environ["XDG_RUNTIME_DIR"]
+SOCK = os.path.join(RUNTIME, "holdsuper.sock")
+WAYFIRE = os.environ.get("WAYFIRE_SOCKET") or os.path.join(
+    RUNTIME, f"wayfire-{os.environ.get('WAYLAND_DISPLAY', 'wayland-1')}-.socket")
+SCHEMA_DIR = "/usr/share/gnome-shell/extensions/hold-super@hadi.local/schemas"
+
+
+def setting(key, default):
+    try:
+        out = subprocess.run(["gsettings", "--schemadir", SCHEMA_DIR, "get",
+                              "org.gnome.shell.extensions.hold-super", key],
+                             capture_output=True, text=True, timeout=5, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return default
+    if key == "hold-ms":
+        return int(out.split()[-1])
+    return [c.lower() for c in re.findall(r"'([^']*)'", out)]
+
+
+HOLD_MS = setting("hold-ms", 200)
+GAME_CLASSES = setting("game-classes", [])
+
+
+def process_is_game(pid):
+    for _ in range(12):
+        if pid <= 1:
+            return False
+        try:
+            argv = open(f"/proc/{pid}/cmdline", "rb").read().decode(errors="replace").split("\0")
+            stat = open(f"/proc/{pid}/stat").read()
+        except OSError:
+            return False
+        if argv[0].lower().endswith(".exe") or "SteamLaunch" in argv:
+            return True
+        pid = int(stat[stat.rindex(")") + 2:].split()[1])
+    return False
+
+
+def is_game(view):
+    app = (view.get("app-id") or "").lower()
+    if re.fullmatch(r"steam_app_\d+", app) or app.endswith(".exe") or app in GAME_CLASSES:
+        return True
+    return bool(view.get("pid")) and process_is_game(view["pid"])
+
+
+class Daemon:
+    """The holdsuper socket; reconnects when the daemon restarts (it never writes, so EOF = closed)."""
+
+    def __init__(self):
+        self.writer, self.passing = None, 0
+
+    async def run(self):
+        while True:
+            try:
+                reader, self.writer = await asyncio.open_unix_connection(SOCK)
+                self.send(f"hold {HOLD_MS}\noverview 0\npass {self.passing}\n")
+                await reader.read()
+            except OSError:
+                pass
+            self.writer = None
+            await asyncio.sleep(2)
+
+    def send(self, text):
+        if self.writer:
+            self.writer.write(text.encode())
+
+    def set_pass(self, passing):
+        if passing != self.passing:
+            self.passing = passing
+            self.send(f"pass {passing}\n")
+
+
+async def call(writer, method, data=None):
+    body = json.dumps({"method": method, "data": data or {}}).encode()
+    writer.write(struct.pack("<I", len(body)) + body)
+    await writer.drain()
+
+
+async def receive(reader):
+    size = struct.unpack("<I", await reader.readexactly(4))[0]
+    return json.loads(await reader.readexactly(size))
+
+
+async def main():
+    daemon = Daemon()
+    asyncio.create_task(daemon.run())
+    reader, writer = await asyncio.open_unix_connection(WAYFIRE)
+    await call(writer, "window-rules/get-focused-view")
+    focused = (await receive(reader)).get("info")
+    await call(writer, "window-rules/events/watch", {"events": ["view-focused"]})
+    await receive(reader)
+    while True:
+        if focused is None or focused.get("type") == "toplevel":
+            daemon.set_pass(1 if focused and is_game(focused) else 0)
+        message = await receive(reader)
+        if message.get("event") == "view-focused":
+            focused = message.get("view")
+
+
+try:
+    asyncio.run(main())
+except (OSError, asyncio.IncompleteReadError) as error:
+    raise SystemExit(f"Wayfire IPC: {error}")

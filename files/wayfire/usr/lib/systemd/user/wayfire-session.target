@@ -1,0 +1,7 @@
+# Started by the autostart of ~/.config/wayfire.ini once the display exists, stopped by wayfire-session at exit.
+# graphical-session.target refuses a manual start; xdg-desktop-portal and the session units need it.
+[Unit]
+Description=Wayfire session
+BindsTo=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
