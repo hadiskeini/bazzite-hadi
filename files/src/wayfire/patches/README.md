@@ -9,7 +9,7 @@ Each patch starts with a header: the problem, the fix, the upstream status, and 
 
 | Patch | Problem | Upstream | Remove when |
 |---|---|---|---|
-| `wayfire/0001-direct-scanout-at-fractional-scale.patch` | No direct scanout at scale 1.5 (fix: no scale check, the hardware scales to the output) | [#3253](https://github.com/WayfireWM/wayfire/issues/3253), maintainer agrees | Fix on main |
+| `wayfire/0001-direct-scanout-at-fractional-scale.patch` | No direct scanout at scale 1.5 (fix: no scale check, buffer must have the output size) | [#3253](https://github.com/WayfireWM/wayfire/issues/3253), maintainer agrees | Fix on main |
 | `wayfire/0002-keep-above-state-set-before-map.patch` | `on created` always_on_top is lost at map (PiP rules) | Not reported | Upstream keeps the state at map |
 | `wayfire/0003-fractional-xwayland-cursor-scale.patch` | X cursors scaled by an integer (1.5 → 1): too large or blurry | Not reported | Upstream uses a fractional scale |
 | `wayfire/0004-srgb-in-8-bit-aux-buffers.patch` | Moved/transformed windows change tint (Vulkan, linear values in 8-bit buffers) | Not reported | Upstream picks the encoding by precision |

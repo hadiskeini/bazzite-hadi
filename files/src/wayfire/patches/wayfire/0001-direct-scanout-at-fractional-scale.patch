@@ -4,42 +4,31 @@ Problem: direct scanout never happens on an output with a fractional scale (DP-3
 at 1.5). The scanout check compares the surface's integer buffer scale with the
 output scale, which can never be equal at 1.5. Every fullscreen game is then
 composited. Present since Wayfire 0.9.0.
-Fix: remove the scale check and set buffer_dst_box to the full output, so the
-display hardware scales a buffer of another size; a driver that cannot fails
-the test commit and the frame is composited. Without the box, wlroots would
-show such a buffer unscaled in the top-left corner (amdgpu, Intel skl+ accept
-that). A viewport crop is refused: some drivers ignore the plane's source
-rectangle. Same approach as wlr_scene.
+Fix (the maintainer's variant): no scale check; the buffer must have the
+output's pixel size and transform and no viewport crop. A buffer of another
+size is composited as before.
 Upstream: https://github.com/WayfireWM/wayfire/issues/3253 (open). The maintainer
-agreed on 2026-11-22 to skip the scale check. Reply and PR drafts:
+asked for this variant on 2026-11-22. PR and reply drafts:
 ~/Documents/Wayfire direct scanout/; not posted yet.
 Remove when: the fix is on main. Check: a fullscreen game at scale 1.5 is
-scanned out directly, and a fullscreen client without fractional-scale-v1 fills
-the screen.
+scanned out directly (no composition).
 Base: wayfire 669bbe36.
 
 diff --git a/src/view/wlr-surface-node.cpp b/src/view/wlr-surface-node.cpp
-index 428f1d1..c69e6fa 100644
+index 428f1d1..abe79ea 100644
 --- a/src/view/wlr-surface-node.cpp
 +++ b/src/view/wlr-surface-node.cpp
-@@ -464,10 +464,9 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
+@@ -464,9 +464,11 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
              return direct_scanout::OCCLUSION;
          }
  
 -        // Must have a wlr surface with the correct scale and transform
-+        // Must have the output's transform and no viewport crop: some drivers ignore the source rectangle
++        // Must have a buffer of the output's size and transform, not cropped by a viewport
          auto wlr_surf = self->surface;
 -        if ((self->current_state.scale != output->handle->scale) ||
--            (self->current_state.transform != output->handle->transform))
-+        if ((self->current_state.transform != output->handle->transform) || self->current_state.src_viewport)
++        auto buffer   = self->current_state.current_buffer;
++        if (!buffer || self->current_state.src_viewport ||
++            (buffer->width != output->handle->width) || (buffer->height != output->handle->height) ||
+             (self->current_state.transform != output->handle->transform))
          {
              return direct_scanout::OCCLUSION;
-         }
-@@ -499,6 +498,7 @@ class wf::scene::wlr_surface_node_t::wlr_surface_render_instance_t : public rend
-         wlr_output_state state;
-         wlr_output_state_init(&state);
-         wlr_output_state_set_buffer(&state, self->current_state.current_buffer);
-+        state.buffer_dst_box = {0, 0, output->handle->width, output->handle->height};
-         if (self->current_state.acquire_point)
-         {
-             wlr_output_state_set_wait_timeline(&state,
