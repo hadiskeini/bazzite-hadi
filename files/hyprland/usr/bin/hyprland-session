@@ -1,0 +1,17 @@
+#!/usr/bin/bash
+# GDM's Hyprland entry starts this. The user manager outlives the session, so the session target must stop here,
+# or graphical-session.target stays active into the next login.
+trap 'systemctl --user stop hyprland-session.target' EXIT
+trap 'exit 143' TERM HUP INT
+# Right after the login screen, GDM's compositor can still hold the GPU and Hyprland exits at once. An exit in the
+# first seconds gets another try.
+status=1
+for try in 1 2 3 4; do
+  start=$SECONDS
+  start-hyprland "$@" &
+  wait $! && exit 0
+  status=$?
+  (( SECONDS - start < 3 )) || exit "$status"
+  sleep 1
+done
+exit "$status"

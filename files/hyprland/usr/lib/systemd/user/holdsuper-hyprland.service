@@ -1,0 +1,14 @@
+# holdsuper's front end in Hyprland (GNOME has the extension hold-super@hadi.local): without it the side button stays Forward only.
+[Unit]
+Description=holdsuper front end for Hyprland (game detection, pass mode)
+PartOf=hyprland-session.target
+After=hyprland-session.target holdsuper.service
+ConditionPathExists=/usr/bin/holdsuper
+
+[Service]
+ExecStart=/usr/libexec/holdsuper-hyprland
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=hyprland-session.target

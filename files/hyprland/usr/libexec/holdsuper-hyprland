@@ -1,24 +1,22 @@
 #!/usr/bin/python3
-"""Front end for the holdsuper daemon in Wayfire, as hold-super@hadi.local is in GNOME.
+"""Front end for the holdsuper daemon in Hyprland, as hold-super@hadi.local is in GNOME.
 
 Without a connected front end holdsuper leaves the mouse alone, so the side button would never become Super.
 This one sends "pass 1" while a game is focused and "pass 0" otherwise. Game rules as in the extension:
-app_id steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, or an app_id
+class steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, or a class
 from the extension's game-classes. hold-ms, game-classes, overview-on-release and window-actions come from its
-GSettings, so the button acts the same in both sessions; wayfire.ini binds what they send (Super alone, Super+F12,
-Super+Q). Focus comes from Wayfire's IPC (plugin ipc-rules); layer-shell surfaces do not change the state.
+GSettings, so the button acts the same in both sessions; hyprland.lua binds what they send (Super alone,
+Super+F12, Super+Q). Focus comes from Hyprland's event socket; layer-shell surfaces do not change the state.
 """
 import asyncio
 import json
 import os
 import re
-import struct
 import subprocess
 
 RUNTIME = os.environ["XDG_RUNTIME_DIR"]
 SOCK = os.path.join(RUNTIME, "holdsuper.sock")
-WAYFIRE = os.environ.get("WAYFIRE_SOCKET") or os.path.join(
-    RUNTIME, f"wayfire-{os.environ.get('WAYLAND_DISPLAY', 'wayland-1')}-.socket")
+HYPR = os.path.join(RUNTIME, "hypr", os.environ["HYPRLAND_INSTANCE_SIGNATURE"])
 SCHEMA_DIR = "/usr/share/gnome-shell/extensions/hold-super@hadi.local/schemas"
 
 
@@ -57,11 +55,11 @@ def process_is_game(pid):
     return False
 
 
-def is_game(view):
-    app = (view.get("app-id") or "").lower()
+def is_game(window):
+    app = (window.get("class") or "").lower()
     if re.fullmatch(r"steam_app_\d+", app) or app.endswith(".exe") or app in GAME_CLASSES:
         return True
-    return bool(view.get("pid")) and process_is_game(view["pid"])
+    return (window.get("pid") or 0) > 0 and process_is_game(window["pid"])
 
 
 class Daemon:
@@ -91,34 +89,31 @@ class Daemon:
             self.send(f"pass {passing}\n")
 
 
-async def call(writer, method, data=None):
-    body = json.dumps({"method": method, "data": data or {}}).encode()
-    writer.write(struct.pack("<I", len(body)) + body)
+async def active_window():
+    reader, writer = await asyncio.open_unix_connection(os.path.join(HYPR, ".socket.sock"))
+    writer.write(b"j/activewindow")
     await writer.drain()
-
-
-async def receive(reader):
-    size = struct.unpack("<I", await reader.readexactly(4))[0]
-    return json.loads(await reader.readexactly(size))
+    reply = await reader.read()
+    writer.close()
+    try:
+        return json.loads(reply) or None
+    except ValueError:
+        return None
 
 
 async def main():
     daemon = Daemon()
     asyncio.create_task(daemon.run())
-    reader, writer = await asyncio.open_unix_connection(WAYFIRE)
-    await call(writer, "window-rules/get-focused-view")
-    focused = (await receive(reader)).get("info")
-    await call(writer, "window-rules/events/watch", {"events": ["view-focused"]})
-    await receive(reader)
+    events, _ = await asyncio.open_unix_connection(os.path.join(HYPR, ".socket2.sock"))
     while True:
-        if focused is None or focused.get("type") == "toplevel":
-            daemon.set_pass(1 if focused and is_game(focused) else 0)
-        message = await receive(reader)
-        if message.get("event") == "view-focused":
-            focused = message.get("view")
+        focused = await active_window()
+        daemon.set_pass(1 if focused and is_game(focused) else 0)
+        while not (line := await events.readline()).startswith(b"activewindowv2>>"):
+            if not line:
+                raise OSError("Hyprland closed the event socket")
 
 
 try:
     asyncio.run(main())
-except (OSError, asyncio.IncompleteReadError) as error:
-    raise SystemExit(f"Wayfire IPC: {error}")
+except OSError as error:
+    raise SystemExit(f"Hyprland IPC: {error}")

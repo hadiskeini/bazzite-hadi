@@ -11,8 +11,8 @@ The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 - `recipes/recipe.yml` — pc-bazzite: base image, build stages, module order
 - `recipes/shared.yml` — preferences valid on any Bazzite machine
 - `recipes/pc.yml` — facts about pc-bazzite (hardware, kernel arguments, masks)
-- `recipes/wayfire.yml` — pc-bazzite: the Wayfire session next to GNOME, from upstream main (`files/src/wayfire`, built
-  by `.github/workflows/wayfire.yml` for x86_64 and aarch64, only when a head of main moved; the VM can take it later)
+- `recipes/hyprland.yml` — both images: the Hyprland session with the shell Frost next to GNOME, `hyprland-git`
+  (upstream main) from the COPR lionheartp/Hyprland; its version is in the fingerprint, so a new build rebuilds
 - `recipes/vm.yml` — vm-silverblue: base image, build stages, module order
 - `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM's GPU driver and
   shims, OmacVM udev rules)

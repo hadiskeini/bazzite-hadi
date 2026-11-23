@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Hyprland
+Comment=Hyprland with the shell Frost
+Exec=hyprland-session
+TryExec=start-hyprland
+Type=Application
+DesktopNames=Hyprland

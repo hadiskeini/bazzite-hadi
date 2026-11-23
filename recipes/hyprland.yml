@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
+# Hyprland next to GNOME in both images (bazzite-hadi x86_64, silverblue-vm aarch64), with the own shell Frost
+# (~/.local/bin/frost, from ~/home). GNOME stays the default session. hyprland-git is the COPR's build of upstream
+# main (about daily, both architectures); the fingerprint has its version, so a new build rebuilds the images.
+# The GDM entry "Hyprland" runs hyprland-session; the COPR's own entry is removed. The PAM service "frost" is
+# for Frost's lock screen.
+modules:
+  - type: files
+    files:
+      - source: hyprland
+        destination: /
+
+  - type: dnf
+    repos:
+      copr:
+        - lionheartp/Hyprland
+      cleanup: true
+    install:
+      install-weak-deps: false
+      packages:
+        - hyprland-git
+        - xdg-desktop-portal-hyprland
+        - hyprland-guiutils   # hyprland-dialog: Hyprland's prompts (app not responding, permissions)
+        - mate-polkit         # Hyprland has no polkit agent of its own
+
+  - type: script
+    snippets:
+      - rm /usr/share/wayland-sessions/hyprland.desktop
+      - "! find /usr/bin/Hyprland /usr/bin/hyprctl /usr/libexec/xdg-desktop-portal-hyprland -type f -exec ldd {} + 2>/dev/null | grep 'not found'"
+
+  - type: systemd
+    user:
+      enabled:
+        - holdsuper-hyprland.service

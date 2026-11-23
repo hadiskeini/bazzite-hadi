@@ -4,8 +4,9 @@
 # versions alone come in with the weekly build.
 set -euo pipefail
 echo "base=$(skopeo inspect --raw docker://quay.io/fedora/fedora-silverblue:45 | sha256sum | cut -c1-64)"
-echo "wayfire=$(skopeo inspect --raw docker://ghcr.io/hadiskeini/wayfire-stack:current | sha256sum | cut -c1-64)"
-echo "files=$(git ls-files -s -- recipes/vm.yml recipes/vm-host.yml recipes/wayfire.yml files/vm files/wayfire \
+echo "hyprland=$(curl -fsSL 'https://copr.fedorainfracloud.org/api_3/package/?ownername=lionheartp&projectname=Hyprland&packagename=hyprland-git&with_latest_succeeded_build=true' \
+  | jq -r '.builds.latest_succeeded.source_package.version // "unknown"')"
+echo "files=$(git ls-files -s -- recipes/vm.yml recipes/vm-host.yml recipes/hyprland.yml files/vm files/hyprland \
   files/src/omacvm-gpu files/src/omacvm-battery files/src/omacvm-backlight \
   files/scripts/build-v4l2loopback.sh files/scripts/vm-mesa.sh files/scripts/build-omacvm-gpu.sh \
   files/scripts/build-omacvm-modules.sh files/scripts/install-omacvm-gpu.sh files/scripts/install-omacvm-modules.sh files/scripts/install-omacvm-touchid.sh \

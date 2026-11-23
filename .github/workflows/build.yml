@@ -19,16 +19,7 @@ concurrency:
   # A scheduled run waits for a running build instead of cancelling it, and then skips what that build promoted.
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 jobs:
-  wayfire-stack:
-    uses: ./.github/workflows/wayfire.yml
-    permissions:
-      contents: read
-      packages: write
-
-  # Also after a failed stack build: the image then takes the last good stack (wayfire-stack:current).
   bazzite-hadi:
-    needs: wayfire-stack
-    if: ${{ !cancelled() }}
     uses: ./.github/workflows/image.yml
     with:
       image: bazzite-hadi
@@ -43,8 +34,6 @@ jobs:
 
   # vm-silverblue: aarch64, built natively on GitHub's arm64 runner (no emulation).
   silverblue-vm:
-    needs: wayfire-stack
-    if: ${{ !cancelled() }}
     uses: ./.github/workflows/image.yml
     with:
       image: silverblue-vm
