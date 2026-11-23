@@ -1,0 +1,15 @@
+[Unit]
+Description=holdsuper front end for KDE Plasma (game detection, window actions)
+PartOf=graphical-session.target
+After=graphical-session.target holdsuper.service
+ConditionEnvironment=XDG_CURRENT_DESKTOP=KDE
+ConditionGroup=input
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/holdsuper-kde
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

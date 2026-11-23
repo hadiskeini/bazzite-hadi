@@ -1,6 +1,0 @@
-#%PAM-1.0
-# The PAM service of Frost's lock screen: a copy of assets/pam.d/frost in the Frost repo.
-# Frost only calls pam_authenticate, so only the auth stack counts. It is the auth stack of `login`.
-auth       substack     system-auth
-auth       include      postlogin
-account    include      system-auth

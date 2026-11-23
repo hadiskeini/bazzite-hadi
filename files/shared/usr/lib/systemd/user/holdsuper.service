@@ -1,10 +1,10 @@
-# Mouse side button: tap = itself (Forward), hold = Super (built into the image). Driven by the GNOME extension
-# hold-super@hadi.local; with the extension absent or a game focused it holds no device at all (stock input path).
+# Mouse side button: tap = itself (Forward), hold = Super (built into the image). Driven by a desktop front end;
+# with no front end connected or a game focused it holds no device at all (stock input path).
 # Needs input + uinput group membership (already the case), nothing else.
 [Unit]
 Description=holdsuper (mouse button tap/hold to Super)
 After=default.target
-# Enabled globally: root (every sudo starts a user manager) and the GDM greeter (uid above SYS_UID_MAX) would get a
+# Enabled globally: root (every sudo starts a user manager) and the login screen user would get a
 # copy. Only the desktop user has the device groups.
 ConditionGroup=input
 ConditionGroup=uinput

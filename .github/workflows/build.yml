@@ -24,7 +24,7 @@ jobs:
     with:
       image: bazzite-hadi
       recipe: recipe.yml
-      base: ghcr.io/ublue-os/bazzite-gnome:testing
+      base: ghcr.io/ublue-os/bazzite:testing
       runner: ubuntu-24.04
     secrets: inherit
     permissions:

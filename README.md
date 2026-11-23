@@ -3,7 +3,7 @@
 
 The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 
-- `ghcr.io/hadiskeini/bazzite-hadi` — pc-bazzite: Bazzite GNOME (testing) with Fedora branding, trimmed, and the
+- `ghcr.io/hadiskeini/bazzite-hadi` — pc-bazzite: Bazzite KDE (testing) with Fedora branding, trimmed, and the
   machine's system config built in. x86_64.
 - `ghcr.io/hadiskeini/silverblue-vm` — vm-silverblue: Fedora Silverblue 45 in OmacVM.app on a MacBook, with the
   VM's system config and the Mac camera module built in. aarch64, built on GitHub's arm64 runner.
@@ -11,7 +11,6 @@ The OS images for two machines, built with [BlueBuild](https://blue-build.org):
 - `recipes/recipe.yml` — pc-bazzite: base image, build stages, module order
 - `recipes/shared.yml` — preferences valid on any Bazzite machine
 - `recipes/pc.yml` — facts about pc-bazzite (hardware, kernel arguments, masks)
-- `recipes/niri.yml` — both images: the niri session (git build) next to GNOME, with what the own shell Frost needs
 - `recipes/vm.yml` — vm-silverblue: base image, build stages, module order
 - `recipes/vm-host.yml` — facts about vm-silverblue (Mesa for Venus, the camera module, OmacVM's GPU driver and
   shims, OmacVM udev rules)

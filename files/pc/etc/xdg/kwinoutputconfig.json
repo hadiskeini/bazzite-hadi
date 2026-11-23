@@ -1,0 +1,35 @@
+[
+    {
+        "name": "outputs",
+        "data": [
+            {
+                "connectorName": "DP-3",
+                "edidIdentifier": "GBT 12804 401 8 2023 0",
+                "edidHash": "137847846d4ad1d08d9e98e168739de3",
+                "mode": {
+                    "width": 3840,
+                    "height": 2160,
+                    "refreshRate": 143988
+                },
+                "scale": 1.5,
+                "vrrPolicy": "Always"
+            }
+        ]
+    },
+    {
+        "name": "setups",
+        "data": [
+            {
+                "lidClosed": false,
+                "outputs": [
+                    {
+                        "outputIndex": 0,
+                        "enabled": true,
+                        "position": { "x": 0, "y": 0 },
+                        "priority": 0
+                    }
+                ]
+            }
+        ]
+    }
+]

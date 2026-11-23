@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/recipe-v1.json
-# pc-bazzite: Bazzite GNOME (testing) with Fedora branding, trimmed, and this PC's system config built in.
+# pc-bazzite: Bazzite KDE (testing) with Fedora branding, trimmed, and this PC's system config built in.
 # shared.yml = preferences valid on any Bazzite machine; pc.yml = facts about this PC.
 name: bazzite-hadi
-description: Bazzite GNOME with Fedora branding, trimmed, with the pc-bazzite system config built in
-base-image: ghcr.io/ublue-os/bazzite-gnome
+description: Bazzite KDE with Fedora branding, trimmed, with the pc-bazzite system config built in
+base-image: ghcr.io/ublue-os/bazzite
 image-version: testing
 # Replaces the default tags: a build never moves :latest. The workflow moves it after the import test.
 alt-tags:
@@ -43,7 +43,6 @@ stages:
 modules:
   - from-file: shared.yml
   - from-file: pc.yml
-  - from-file: niri.yml
   # dnf scriptlets leave files in /run; it is a tmpfs at runtime, and bootc container lint flags them.
   - type: script
     snippets:

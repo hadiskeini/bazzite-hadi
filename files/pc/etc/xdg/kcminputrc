@@ -1,0 +1,3 @@
+# Flat pointer acceleration for every mouse, also on the login screen. 1 = flat (libinput profile bit).
+[Libinput][Defaults][Pointer]
+PointerAccelerationProfile=1

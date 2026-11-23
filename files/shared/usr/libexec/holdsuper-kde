@@ -1,0 +1,152 @@
+#!/usr/bin/python3 -I
+"""holdsuper's front end in KDE Plasma.
+
+KWin runs /usr/share/holdsuper/kwin.js, which calls Focus() here on each focus change. This process tells the
+holdsuper daemon its settings and "pass 1" while a game has focus: the daemon then releases the mouse, and the
+game gets the stock input path. A game is a window of class steam_app_<n> or *.exe, a window whose process or
+an ancestor runs a *.exe or Steam's `SteamLaunch`, or a fullscreen window.
+"""
+
+import os
+import re
+import signal
+
+from gi.repository import Gio, GLib, GLibUnix
+
+HOLD_MS = 50
+OVERVIEW = 1
+COMBOS = 1
+FULLSCREEN_IS_GAME = True
+
+NAME = "local.hadi.HoldSuper"
+SCRIPT = os.environ.get("HOLDSUPER_KWIN_SCRIPT", "/usr/share/holdsuper/kwin.js")
+SOCKET = os.path.join(os.environ["XDG_RUNTIME_DIR"], "holdsuper.sock")
+INTERFACE = Gio.DBusNodeInfo.new_for_xml(f"""
+<node><interface name="{NAME}">
+  <method name="Focus"><arg type="i" name="pid"/><arg type="s" name="cls"/><arg type="b" name="fullscreen"/></method>
+</interface></node>""").interfaces[0]
+
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+connection = None
+wanted_pass = 1
+sent_pass = None
+games = {}
+
+
+def process_runs_game(pid):
+    for _ in range(12):
+        if pid <= 1:
+            return False
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as file:
+                argv = file.read().split(b"\0")
+            with open(f"/proc/{pid}/stat", "rb") as file:
+                stat = file.read()
+        except OSError:
+            return False
+        if argv[0].lower().endswith(b".exe") or b"SteamLaunch" in argv:
+            return True
+        pid = int(stat[stat.rindex(b")") + 2:].split()[1])
+    return False
+
+
+def is_game(pid, cls, fullscreen):
+    cls = cls.lower()
+    if re.fullmatch(r"steam_app_\d+", cls) or cls.endswith(".exe"):
+        return True
+    if FULLSCREEN_IS_GAME and fullscreen:
+        return True
+    if pid <= 0:
+        return False
+    if pid not in games:
+        games[pid] = process_runs_game(pid)
+    return games[pid]
+
+
+def send(text):
+    global connection
+    if connection is None:
+        return False
+    try:
+        connection.get_output_stream().write_all(text.encode(), None)
+        return True
+    except GLib.Error:
+        disconnect()
+        return False
+
+
+def send_pass():
+    global sent_pass
+    if wanted_pass != sent_pass and send(f"pass {wanted_pass}\n"):
+        sent_pass = wanted_pass
+        print(f"pass {wanted_pass}", flush=True)
+
+
+def disconnect():
+    global connection, sent_pass
+    if connection is not None:
+        connection.close(None)
+    connection = None
+    sent_pass = None
+    GLib.timeout_add_seconds(2, connect)
+
+
+def on_closed(stream, result):
+    # The daemon never writes: a finished read means it closed the socket (a restart).
+    try:
+        stream.read_bytes_finish(result)
+    except GLib.Error:
+        pass
+    disconnect()
+
+
+def connect():
+    global connection
+    try:
+        connection = Gio.SocketClient().connect(Gio.UnixSocketAddress.new(SOCKET), None)
+    except GLib.Error:
+        GLib.timeout_add_seconds(2, connect)
+        return False
+    send(f"hold {HOLD_MS}\noverview {OVERVIEW}\ncombos {COMBOS}\n")
+    send_pass()
+    connection.get_input_stream().read_bytes_async(1, GLib.PRIORITY_DEFAULT, None, on_closed)
+    return False
+
+
+def on_call(conn, sender, path, interface, method, parameters, invocation):
+    global wanted_pass
+    pid, cls, fullscreen = parameters.unpack()
+    wanted_pass = 1 if is_game(pid, cls, fullscreen) else 0
+    send_pass()
+    invocation.return_value(None)
+
+
+def kwin(method, *args):
+    signature = "(" + "".join("s" if isinstance(a, str) else "i" for a in args) + ")"
+    return bus.call_sync("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", method,
+                         GLib.Variant(signature, args), None, 0, 5000, None).unpack()
+
+
+def load_script(*_):
+    kwin("unloadScript", "holdsuper")
+    number = kwin("loadScript", SCRIPT, "holdsuper")[0]
+    bus.call_sync("org.kde.KWin", f"/Scripting/Script{number}", "org.kde.kwin.Script", "run",
+                  None, None, 0, 5000, None)
+
+
+def quit(*_):
+    try:
+        kwin("unloadScript", "holdsuper")
+    except GLib.Error:
+        pass
+    loop.quit()
+
+
+bus.register_object("/", INTERFACE, on_call, None, None)
+Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.NONE, None, None)
+Gio.bus_watch_name_on_connection(bus, "org.kde.KWin", Gio.BusNameWatcherFlags.NONE, load_script, None)
+connect()
+loop = GLib.MainLoop()
+GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, quit)
+GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, quit)
+loop.run()

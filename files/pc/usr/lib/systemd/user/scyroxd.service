@@ -4,7 +4,7 @@
 [Unit]
 Description=Scyrox battery daemon
 After=default.target
-# Enabled globally: root (every sudo starts a user manager) and the GDM greeter (uid above SYS_UID_MAX) would get a
+# Enabled globally: root (every sudo starts a user manager) and the login screen user would get a
 # copy. Only the desktop user has the device groups.
 ConditionGroup=input
 

@@ -1,16 +1,13 @@
 # yaml-language-server: $schema=https://schema.blue-build.org/module-list-v1.json
 # Facts about pc-bazzite: Ryzen 7 5800X3D, RX 9070, wired only, no tablet.
 modules:
+  # etc/xdg: KDE system defaults, also for the login screen. A user's own ~/.config file wins, and KWin writes
+  # one for the login screen user (plasmalogin) at its first start: a later change to the monitor file does not
+  # reach that user.
   - type: files
     files:
       - source: pc
         destination: /
-
-  # One GPU: cardwire's GPU switching does nothing here, but gnome-shell needs switcheroo-control, which cardwire
-  # stands in for. A plain removal would take gnome-shell with it, so swap it for Fedora's small one.
-  - type: containerfile
-    snippets:
-      - RUN dnf -y remove cardwire-gui && dnf -y swap cardwire switcheroo-control
 
   - type: dnf
     repos:
@@ -22,6 +19,8 @@ modules:
         - papirus-icon-theme   # Papirus-Dark: the parent icon theme of Umber
     remove:
       packages:
+        - cardwire             # GPU switching; one GPU here
+        - cardwire-gui
         - thermald             # Intel only
         - intel-lpmd
         - qemu-guest-agent     # bare metal
@@ -63,10 +62,6 @@ modules:
       - nmi_watchdog=0                     # frees the PMU counter the NMI watchdog holds
       - tsc=reliable                       # no clocksource watchdog (cross-CPU TSC reads); single-socket Zen 3
 
-  - type: gschema-overrides
-    include:
-      - zz1-pc.gschema.override
-
   - type: systemd
     system:
       enabled:
@@ -84,7 +79,7 @@ modules:
         - cups.service                     # no printer
         - cups.socket
         - cups.path
-        - geoclue.service                  # no location user (GNOME location services off)
+        - geoclue.service                  # no location user
         - unbound-anchor.timer             # unbound is not installed
         - raid-check.timer                 # no md RAID
     user:

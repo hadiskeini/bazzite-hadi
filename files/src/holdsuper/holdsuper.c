@@ -6,10 +6,10 @@
 // released before the threshold -> the clone emits a normal click of that button; held past it,
 // or another button/wheel used while it is down -> a separate uinput keyboard holds Super.
 //
-// The GNOME extension hold-super@hadi.local drives it over $XDG_RUNTIME_DIR/holdsuper.sock with
+// A desktop front end (in Plasma: /usr/libexec/holdsuper-kde) drives it over $XDG_RUNTIME_DIR/holdsuper.sock with
 // newline-terminated commands: "pass 0|1", "hold <ms>", "overview 0|1", "combos 0|1". "pass 1" (a game is
 // focused) CLOSES the device: the mouse then runs the stock kernel -> libinput path with nothing of
-// ours in it. With no extension connected the daemon also stays in pass mode.
+// ours in it. With no front end connected the daemon also stays in pass mode.
 //
 // Build: cc -O2 -Wall -Wextra -o holdsuper holdsuper.c   (kernel headers only, no libraries)
 // Usage: holdsuper [-d VID:PID[,VID:PID...]] [-b BUTTON_CODE] [-v]
@@ -48,13 +48,14 @@ static int n_ids = 2;
 static int button = BTN_EXTRA;
 static bool verbose;
 
-// runtime settings (from the extension)
+// runtime settings (from the front end)
 static bool pass = true;          // true = device closed, mouse fully native
 static int hold_ms = 200;
-static bool overview = false;     // let a lone hold-and-release open Activities, like a real Super tap
-// During a hold, the middle button sends Super+F12 and the other side button Super+Q in place of the click:
-// the extension binds them to minimize and close the window under the pointer. Mutter takes Super+button for
-// its own window grabs, so the extension cannot see the clicks themselves.
+static bool overview = false;     // let a lone hold-and-release act as a real Super tap (Plasma: the launcher)
+// During a hold, the middle button sends Super+F12 and the other side button Super+F11 in place of the click:
+// the front end binds them to minimize and close the window under the pointer. The compositor takes
+// Super+button for its own window grabs, so the front end cannot see the clicks themselves. Not Super+Q: Plasma
+// binds it to the activity switcher.
 static bool combos = false;
 static bool swallowed_middle, swallowed_side;
 
@@ -112,7 +113,7 @@ static int make_kbd(void) {
     ioctl(fd, UI_SET_KEYBIT, KEY_LEFTMETA);
     ioctl(fd, UI_SET_KEYBIT, KEY_UNKNOWN);
     ioctl(fd, UI_SET_KEYBIT, KEY_F12);
-    ioctl(fd, UI_SET_KEYBIT, KEY_Q);
+    ioctl(fd, UI_SET_KEYBIT, KEY_F11);
     ioctl(fd, UI_SET_KEYBIT, KEY_LEFTCTRL);
     ioctl(fd, UI_SET_KEYBIT, KEY_LEFT);
     ioctl(fd, UI_SET_KEYBIT, KEY_RIGHT);
@@ -400,7 +401,7 @@ static void read_source(struct source *s) {
             if (ev->type == EV_KEY && (ev->code == BTN_MIDDLE || ev->code == BTN_SIDE)) {
                 bool *swallowed = ev->code == BTN_MIDDLE ? &swallowed_middle : &swallowed_side;
                 if (ev->value == 1 && combos && state == HELD) {
-                    int key = ev->code == BTN_MIDDLE ? KEY_F12 : KEY_Q;
+                    int key = ev->code == BTN_MIDDLE ? KEY_F12 : KEY_F11;
                     emit(kbd_fd, EV_KEY, key, 1); syn(kbd_fd);
                     emit(kbd_fd, EV_KEY, key, 0); syn(kbd_fd);
                     *swallowed = true;
@@ -445,14 +446,14 @@ static void drop_client(void) {
     client_fd = -1;
     client_len = 0;
     combos = false;
-    set_pass(true);   // no extension = no game detection: stay native
+    set_pass(true);   // no front end = no game detection: stay native
 }
 
 static void read_client(void) {
     ssize_t n = read(client_fd, client_buf + client_len, sizeof client_buf - 1 - client_len);
     if (n <= 0) {
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) return;
-        logmsg("extension disconnected");
+        logmsg("front end disconnected");
         drop_client();
         return;
     }
@@ -486,7 +487,7 @@ static void read_pending(void) {
             client_len = pending_len;
             pending_fd = -1;
             pending_len = 0;
-            logmsg("extension connected");
+            logmsg("front end connected");
             handle_client_buf();
             return;
         }
@@ -550,7 +551,7 @@ int main(int argc, char **argv) {
     if ((kbd_fd = make_kbd()) < 0) return 1;
     if ((timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)) < 0) return 1;
     if ((listen_fd = make_listener()) < 0) return 1;
-    logmsg("holdsuper ready: button %d, waiting for the extension", button);
+    logmsg("holdsuper ready: button %d, waiting for a front end", button);
 
     while (!quit) {
         struct pollfd pf[4 + MAX_SRC];
