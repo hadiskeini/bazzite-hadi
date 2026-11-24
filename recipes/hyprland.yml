@@ -22,6 +22,7 @@ modules:
         - xdg-desktop-portal-hyprland
         - hyprland-guiutils   # hyprland-dialog: Hyprland's prompts (app not responding, permissions)
         - mate-polkit         # Hyprland has no polkit agent of its own
+        - slurp               # area and window choice for grimblast (portable, ~/home); grim comes with the portal
 
   - type: script
     snippets:
