@@ -1,0 +1,2 @@
+# sudo shows an asterisk for each character of the password.
+Defaults pwfeedback
