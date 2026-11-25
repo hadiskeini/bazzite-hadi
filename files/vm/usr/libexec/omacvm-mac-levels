@@ -7,7 +7,8 @@
     brightness. Written through logind, as the session's user may; read by polling (sysfs, no events).
 The Mac side is OmacVM Bridge: its "audio" ({"output": {"volume": 0-1, "muted"}}) and "display"
 ({"brightness": 0-1}) events, and `omacvm-bridge volume|mute|brightness` to set. A change that only repeats
-the value the other side has is not sent back, so the two sides never chase each other.
+the value the other side has is not sent back, so the two sides never chase each other. The Mac reports each
+value it was sent, late: during quick steps those echoes of older steps are not applied to the VM.
 """
 import json
 import pathlib
@@ -19,6 +20,8 @@ SINK = "omacvm_mac_output"
 BACKLIGHT = pathlib.Path("/sys/class/backlight/omacvm/brightness")
 lock = threading.Lock()
 mac = {"volume": None, "muted": None, "brightness": None}   # what the Mac has, as last seen or set
+ECHO_SECONDS = 2.0
+sent = {"volume": [], "muted": []}   # (value, time) sent to the Mac lately, oldest first
 
 
 def log(message):
@@ -52,6 +55,18 @@ def set_backlight(level):
         "org.freedesktop.login1.Session", "SetBrightness", "ssu", "backlight", "omacvm", str(level))
 
 
+def note_sent(key, value):
+    now = time.monotonic()
+    sent[key] = [(v, t) for v, t in sent[key] if now - t < ECHO_SECONDS] + [(value, now)]
+
+
+def echo(key, value):
+    """Whether `value` is the Mac's late report of a value sent to it, not a change made on the Mac."""
+    now = time.monotonic()
+    sent[key] = [(v, t) for v, t in sent[key] if now - t < ECHO_SECONDS]
+    return any(v == value for v, _ in sent[key])
+
+
 def from_mac():
     while True:
         proc = subprocess.Popen(["omacvm-bridge", "events"], stdout=subprocess.PIPE, text=True)
@@ -66,12 +81,15 @@ def from_mac():
             with lock:
                 if isinstance(out, dict) and isinstance(out.get("volume"), (int, float)):
                     volume, muted = round(out["volume"] * 100), out.get("muted") is True
-                    mac.update(volume=volume, muted=muted)
                     state = sink_state()
-                    if state and state["volume"] != volume:
-                        run("pactl", "set-sink-volume", SINK, f"{volume}%")
-                    if state and state["muted"] != muted:
-                        run("pactl", "set-sink-mute", SINK, "1" if muted else "0")
+                    if not echo("volume", volume):
+                        mac["volume"] = volume
+                        if state and state["volume"] != volume:
+                            run("pactl", "set-sink-volume", SINK, f"{volume}%")
+                    if not echo("muted", muted):
+                        mac["muted"] = muted
+                        if state and state["muted"] != muted:
+                            run("pactl", "set-sink-mute", SINK, "1" if muted else "0")
                 elif isinstance(event.get("brightness"), (int, float)):
                     level = round(event["brightness"] * 100)
                     mac["brightness"] = level
@@ -95,9 +113,11 @@ def volume_to_mac():
                 if state["volume"] != mac["volume"]:
                     run("omacvm-bridge", "volume", str(state["volume"]))
                     mac["volume"] = state["volume"]
+                    note_sent("volume", state["volume"])
                 if state["muted"] != mac["muted"]:
                     run("omacvm-bridge", "mute", "on" if state["muted"] else "off")
                     mac["muted"] = state["muted"]
+                    note_sent("muted", state["muted"])
         proc.wait()
         log("pactl subscribe ended; again in 3 s")
         time.sleep(3)
