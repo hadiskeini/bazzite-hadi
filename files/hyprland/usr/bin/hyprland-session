@@ -1,7 +1,9 @@
 #!/usr/bin/bash
-# GDM's Hyprland entry starts this. The user manager outlives the session, so the session target must stop here,
-# or graphical-session.target stays active into the next login and GNOME refuses to start. At logout logind sends
-# SIGTERM to the whole session scope, so systemctl must ignore it (an ignored signal stays ignored after fork and exec).
+# GDM's Hyprland entry starts this. Hyprland starts hyprland-session.target (the unit of its package) and stops
+# graphical-session.target at a clean exit. After a crash or a logout the target must stop here: the user manager
+# outlives the session, and graphical-session.target would stay active into the next login and GNOME refuses to start.
+# At logout logind sends SIGTERM to the whole session scope, so systemctl must ignore it (an ignored signal stays
+# ignored after fork and exec).
 trap 'trap "" TERM HUP INT; systemctl --user --no-block stop hyprland-session.target' EXIT
 trap 'exit 143' TERM HUP INT
 # Right after the login screen, GDM's compositor can still hold the GPU and Hyprland exits at once. An exit in the

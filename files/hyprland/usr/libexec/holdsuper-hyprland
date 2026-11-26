@@ -3,10 +3,15 @@
 
 Without a connected front end holdsuper leaves the mouse alone, so the side button would never become Super.
 This one sends "pass 1" while a game is focused and "pass 0" otherwise. Game rules as in the extension:
-class steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, or a class
-from the extension's game-classes. hold-ms, game-classes, overview-on-release and window-actions come from its
-GSettings, so the button acts the same in both sessions; hyprland.lua binds what they send (Super alone,
-Super+F12, Super+Q). Focus comes from Hyprland's event socket; layer-shell surfaces do not change the state.
+class steam_app_<n> or *.exe, a *.exe or `reaper SteamLaunch` among the process's ancestors, a class from the
+extension's game-classes, or a fullscreen window (fullscreen-is-game). hold-ms, game-classes, fullscreen-is-game
+and overview-on-release come from its GSettings, read when this service starts.
+
+The window actions of the extension (hold + side or middle click) are off here: holdsuper sends Super+Q and
+Super+F12 for them and drops the click, and Hyprland has no minimize for Super+F12. With them off the click goes
+on with Super held, and hyprland.lua binds Super + side click (close the window below the pointer).
+
+Focus and fullscreen changes come from Hyprland's event socket; layer-shell surfaces do not change the state.
 """
 import asyncio
 import json
@@ -36,8 +41,12 @@ def setting(key, default):
 
 HOLD_MS = setting("hold-ms", 200)
 GAME_CLASSES = setting("game-classes", [])
+FULLSCREEN_IS_GAME = setting("fullscreen-is-game", False)
 OVERVIEW = setting("overview-on-release", True)
-COMBOS = setting("window-actions", True)
+# Hyprland's fullscreen mode in j/activewindow; 1 is maximized.
+FULLSCREEN = 2
+# The active window's class and title changes come as activewindowv2 again.
+RECHECK = (b"activewindowv2>>", b"fullscreen>>")
 
 
 def process_is_game(pid):
@@ -59,6 +68,8 @@ def is_game(window):
     app = (window.get("class") or "").lower()
     if re.fullmatch(r"steam_app_\d+", app) or app.endswith(".exe") or app in GAME_CLASSES:
         return True
+    if FULLSCREEN_IS_GAME and (window.get("fullscreen") or 0) >= FULLSCREEN:
+        return True
     return (window.get("pid") or 0) > 0 and process_is_game(window["pid"])
 
 
@@ -72,7 +83,7 @@ class Daemon:
         while True:
             try:
                 reader, self.writer = await asyncio.open_unix_connection(SOCK)
-                self.send(f"hold {HOLD_MS}\noverview {int(OVERVIEW)}\ncombos {int(COMBOS)}\npass {self.passing}\n")
+                self.send(f"hold {HOLD_MS}\noverview {int(OVERVIEW)}\ncombos 0\npass {self.passing}\n")
                 await reader.read()
             except OSError:
                 pass
@@ -108,7 +119,7 @@ async def main():
     while True:
         focused = await active_window()
         daemon.set_pass(1 if focused and is_game(focused) else 0)
-        while not (line := await events.readline()).startswith(b"activewindowv2>>"):
+        while not (line := await events.readline()).startswith(RECHECK):
             if not line:
                 raise OSError("Hyprland closed the event socket")
 
