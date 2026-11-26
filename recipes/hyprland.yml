@@ -24,8 +24,17 @@ modules:
         - mate-polkit         # Hyprland has no polkit agent of its own
         - slurp               # area and window choice for grimblast (portable, ~/home); grim comes with the portal
 
+  - type: copy
+    from: tabbar
+    src: /out/
+    dest: /usr/lib/hyprland-plugins/
+
   - type: script
     snippets:
+      # The plugin loads only into the exact Hyprland build it was compiled against.
+      - >-
+        [ "$(rpm -q --qf '%{VERSION}-%{RELEASE}' hyprland-git)" = "$(cat /usr/lib/hyprland-plugins/hyprland-version)" ]
+        || rm -f /usr/lib/hyprland-plugins/tabbar.so; rm /usr/lib/hyprland-plugins/hyprland-version
       - rm /usr/share/wayland-sessions/hyprland.desktop
       - "! find /usr/bin/Hyprland /usr/bin/hyprctl /usr/libexec/xdg-desktop-portal-hyprland -type f -exec ldd {} + 2>/dev/null | grep 'not found'"
 
