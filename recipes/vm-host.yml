@@ -16,6 +16,10 @@ modules:
       packages:
         - python3-evdev        # OmacVM's gestures and side-button daemons (files/vm)
         - gcc                  # the C linker for cargo (sys in ~/home); came with akmods before the prebuilt module
+    remove:
+      packages:
+        - firefox              # Developer Edition from ~/home (portable/firefox-devedition) replaces it
+        - firefox-langpacks
 
   # Fedora has no Ghostty. The upstream-linked COPR ships new releases first; Terra lags.
   # Ghostty needs OpenGL 4.3 (virgl gives 4.1): libEGL_omacvm (stage omacvm-gpu) gives it Zink with OmacVM's switch,
