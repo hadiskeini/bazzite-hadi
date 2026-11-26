@@ -25,6 +25,7 @@
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
+#include <hyprland/src/ipc/s2/S2.hpp>
 #include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/config/lua/objects/LuaWindow.hpp>
 
@@ -478,6 +479,14 @@ namespace {
             return original(self, type, pos, data);
 
         const auto e = std::any_cast<const IPointer::SButtonEvent&>(data);
+        if (e.button == BTN_RIGHT && hit.deco) {
+            const auto tab = self->m_window->grouping().group()->fromIndex(hit.index);
+            if (tab && e.state == WL_POINTER_BUTTON_STATE_PRESSED)
+                IPC::Socket2::sock()->postEvent({"tabbar-menu",
+                                                 std::format("{:x},{},{},{},{}", rc<uintptr_t>(tab.get()), hit.index + 1, self->m_dwGroupMembers.size(),
+                                                             (int)std::round(pos.x), (int)std::round(pos.y))});
+            return true;
+        }
         if (e.button != BTN_LEFT)
             return original(self, type, pos, data);
 
