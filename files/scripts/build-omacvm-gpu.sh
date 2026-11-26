@@ -25,7 +25,7 @@ mkdir -p /out
 # The shims. Mesa's VA driver is in /usr/lib64/dri on Fedora, not in Arch's /usr/lib/dri.
 sed 's|"/usr/lib/dri/virtio_gpu_drv_video.so"|"/usr/lib64/dri/virtio_gpu_drv_video.so"|' /src/omacvm_drv_video.c > /tmp/omacvm_drv_video.c
 grep -q '"/usr/lib64/dri/virtio_gpu_drv_video.so"' /tmp/omacvm_drv_video.c
-# RPM Fusion's copy (vm-va-freeworld.sh) first: Fedora's Mesa has no H.264 and HEVC. Fedora's when it is missing.
+# RPM Fusion's copy (vm-freeworld.sh) first: Fedora's Mesa has no H.264 and HEVC. Fedora's when it is missing.
 sed -i 's|^\( *\)mesa = dlopen(MESA_DRIVER, RTLD_NOW \| RTLD_GLOBAL);|\1mesa = dlopen("/usr/lib64/dri-freeworld/virtio_gpu_drv_video.so", RTLD_NOW \| RTLD_GLOBAL);\n    if (!mesa)\n\1mesa = dlopen(MESA_DRIVER, RTLD_NOW \| RTLD_GLOBAL);|' /tmp/omacvm_drv_video.c
 grep -q 'dri-freeworld/virtio_gpu_drv_video.so' /tmp/omacvm_drv_video.c
 gcc -shared -fPIC -O2 -o /out/omacvm_drv_video.so /tmp/omacvm_drv_video.c -ldl
