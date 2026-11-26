@@ -10,6 +10,7 @@ modules:
   - type: script
     scripts:
       - vm-mesa.sh
+      - vm-va-freeworld.sh
 
   - type: dnf
     install:
