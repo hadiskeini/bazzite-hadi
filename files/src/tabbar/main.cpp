@@ -674,8 +674,30 @@ namespace {
         return 1;
     }
 
+    // Hyprland moves the focus only when the group had it, so tabs.lua sees no window.active and cannot set no_anim:
+    // a scroll on the bar of another group faded the tabs. A tab switch is instant in both cases.
+    bool scrollTabs(CHyprGroupBarDecoration* self, InputFn original, const Vector2D& pos, std::any data) {
+        const auto owner = self->m_window.lock();
+        const auto group = owner ? owner->grouping().group() : nullptr;
+        if (!original(self, INPUT_TYPE_AXIS, pos, data))
+            return false;
+        if (!group)
+            return true;
+        for (const auto& ref : group->windows()) {
+            const auto w = ref.lock();
+            if (!w)
+                continue;
+            w->presentation().alpha(Desktop::View::WINDOW_ALPHA_LAYOUT)->warp();
+            w->positionAnimation()->warp();
+            w->sizeAnimation()->warp();
+        }
+        return true;
+    }
+
     bool hkInput(CHyprGroupBarDecoration* self, const eInputType type, const Vector2D& pos, std::any data) {
         const auto original = (InputFn)g_inputHook->m_original;
+        if (g_config.enabled->value() && type == INPUT_TYPE_AXIS)
+            return scrollTabs(self, original, pos, data);
         if (!g_config.enabled->value() || (type != INPUT_TYPE_BUTTON && type != INPUT_TYPE_DRAG_START && type != INPUT_TYPE_DRAG_END))
             return original(self, type, pos, data);
 
