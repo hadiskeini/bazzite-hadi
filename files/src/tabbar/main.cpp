@@ -618,7 +618,8 @@ namespace {
     using DragBeginFn = void (*)(void*, SP<Layout::ITarget>, eMouseBindMode, std::optional<Layout::eRectCorner>, bool);
 
     void hkDragBegin(void* self, SP<Layout::ITarget> target, eMouseBindMode mode, std::optional<Layout::eRectCorner> edge, bool grab) {
-        g_dragged = mode == MBIND_MOVE && target ? target->window() : nullptr;
+        const auto window = mode == MBIND_MOVE && target ? target->window() : nullptr;
+        g_dragged         = window && !window->isFloating() ? window : nullptr;
         ((DragBeginFn)g_dragHook->m_original)(self, target, mode, edge, grab);
     }
 
