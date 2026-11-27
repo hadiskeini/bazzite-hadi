@@ -26,6 +26,9 @@
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopTimer.hpp>
 #include <hyprland/src/ipc/s2/S2.hpp>
+#include <hyprland/src/layout/LayoutManager.hpp>
+#include <hyprland/src/layout/supplementary/DragController.hpp>
+#include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/config/lua/objects/LuaWindow.hpp>
 
@@ -67,6 +70,9 @@ namespace {
     CFunctionHook* g_borderHook = nullptr;
     CFunctionHook* g_shadowHook = nullptr;
     CFunctionHook* g_roundHook  = nullptr;
+    CFunctionHook* g_dropHook   = nullptr;
+    CFunctionHook* g_dragHook   = nullptr;
+    PHLWINDOWREF   g_dragged;
 
     // The window whose border or shadow is being drawn: its outline also goes around the bar, so it keeps round top corners.
     Desktop::View::CWindow* g_outline = nullptr;
@@ -103,6 +109,14 @@ namespace {
     } g_hover;
 
     SP<CEventLoopTimer> g_marqueeTimer;
+
+    // A plain drag of a tab; tabs.lua acts on the release, the plugin only draws it.
+    struct {
+        PHLWINDOWREF tab;
+        Vector2D     press, grab, size;
+        bool         active = false;
+    } g_drag;
+    constexpr double DRAG_MIN = 10;
 
     constexpr double MARQUEE_DELAY = 0.6, MARQUEE_HOLD = 1.5, MARQUEE_SPEED = 40;
 
@@ -254,7 +268,8 @@ namespace {
         return std::round(overflow);
     }
 
-    void hkDraw(CHyprGroupBarDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
+    void hkDraw(CHyprGroupBarDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& alpha, const SWindowRenderPresentation& pres) {
+        const float& a = alpha;
         if (!g_config.enabled->value()) {
             ((DrawFn)g_drawHook->m_original)(self, ctx, mon, a, pres);
             return;
@@ -301,6 +316,8 @@ namespace {
                 continue;
 
             const bool isCurrent = w == current;
+            const float tabA      = g_drag.active && g_drag.tab == w ? 0.35F : 1.F;
+            const float a         = alpha * tabA;
             const bool isHover   = g_hover.owner == self->m_window && g_hover.index == (int)i;
             const bool isUrgent  = !isCurrent && (w->m_hints & Desktop::View::WINDOW_HINT_URGENT);
 
@@ -430,9 +447,210 @@ namespace {
         return {nullptr, {}};
     }
 
+    void damageAll() {
+        for (const auto& m : State::monitorState()->monitors())
+            g_pHyprRenderer->damageMonitor(m);
+    }
+
+    bool hyprlandDragging() {
+        return g_layoutManager->dragController()->mode() != MBIND_INVALID;
+    }
+
+    void onButton(const IPointer::SButtonEvent& e) {
+        if (e.button != BTN_LEFT || !g_config.enabled->value())
+            return;
+        if (e.state != WL_POINTER_BUTTON_STATE_PRESSED) {
+            if (g_drag.active)
+                damageAll();
+            g_drag = {};
+            return;
+        }
+        g_drag                  = {};
+        const auto pos          = g_pInputManager->getMouseCoordsInternal();
+        const auto [owner, hit] = barAt(pos);
+        if (!owner || hit.onClose || hyprlandDragging())
+            return;
+        const auto deco = sc<CHyprGroupBarDecoration*>(owner->presentation().decoration(DECORATION_GROUPBAR).get());
+        const auto tab  = tabBox(geometry(deco, deco->assignedBoxGlobal()), hit.index);
+        g_drag          = {owner->grouping().group()->fromIndex(hit.index), pos, pos - tab.pos(), tab.size(), false};
+    }
+
+    void onDragMove(const Vector2D& pos) {
+        if (!g_drag.tab || hyprlandDragging()) {
+            if (g_drag.active)
+                damageAll();
+            g_drag = {};
+            return;
+        }
+        if (!g_drag.active && std::abs(pos.x - g_drag.press.x) + std::abs(pos.y - g_drag.press.y) < DRAG_MIN)
+            return;
+        g_drag.active = true;
+        damageAll();
+    }
+
+    enum eZone : uint8_t {
+        ZONE_NONE,
+        ZONE_CENTER,
+        ZONE_TOP,
+        ZONE_BOTTOM,
+    };
+
+    struct SDrop {
+        PHLWINDOW target;
+        eZone     zone = ZONE_NONE;
+    };
+
+    bool showsTile(const PHLWINDOW& w);
+    CBox tileBox(const PHLWINDOW& w);
+
+    // The tile below the point: its bar and the middle join it as a tab, the top and bottom quarter split it.
+    SDrop dropAt(const Vector2D& pos, const PHLWINDOW& except) {
+        for (const auto& w : Desktop::windowState()->windows()) {
+            if (w == except || !showsTile(w) || !tileBox(w).containsPoint(pos))
+                continue;
+            const CBox win{w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT), w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
+            if (pos.y < win.y)
+                return {w, ZONE_CENTER};
+            if (pos.y < win.y + win.h / 4)
+                return {w, ZONE_TOP};
+            if (pos.y > win.y + win.h * 3 / 4)
+                return {w, ZONE_BOTTOM};
+            return {w, ZONE_CENTER};
+        }
+        return {};
+    }
+
+    const char* zoneName(eZone zone) {
+        return zone == ZONE_TOP ? "top" : zone == ZONE_BOTTOM ? "bottom" : zone == ZONE_CENTER ? "center" : "none";
+    }
+
+    bool showsTile(const PHLWINDOW& w) {
+        return w->mapped() && !w->isHidden() && !w->isFloating() && w->m_workspace && w->m_workspace->visible() &&
+            (!w->grouping().group() || w->grouping().group()->current() == w);
+    }
+
+    // The window and the bar above it, in logical global coordinates.
+    CBox tileBox(const PHLWINDOW& w) {
+        CBox box{w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT), w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
+        if (const auto deco = w->presentation().decoration(DECORATION_GROUPBAR); deco && sc<CHyprGroupBarDecoration*>(deco.get())->visible()) {
+            const auto bar = sc<CHyprGroupBarDecoration*>(deco.get())->assignedBoxGlobal();
+            box            = CBox{box.x, bar.y, box.w, box.y + box.h - bar.y};
+        }
+        return box;
+    }
+
+    // Own tile: only the bands split it (the middle keeps the tab where it is). Other tile: the middle joins it as a tab.
+    void drawZone(CRenderContext& ctx, PHLMONITOR mon, const SDrop& drop, const PHLWINDOW& own) {
+        if (!drop.target || drop.target->m_monitor != mon || (drop.zone == ZONE_CENTER && drop.target == own))
+            return;
+        const auto scale = mon->m_scale;
+        const auto R     = globalRounding();
+        CBox       box   = drop.zone == ZONE_CENTER ? tileBox(drop.target) :
+                                                      CBox{drop.target->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT),
+                                                           drop.target->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
+        Math::SCornerRadii round{R.topLeft * scale, R.topRight * scale, R.bottomRight * scale, R.bottomLeft * scale};
+        if (drop.zone == ZONE_TOP) {
+            box.h /= 2;
+            round.bottomLeft = round.bottomRight = 0;
+        } else if (drop.zone == ZONE_BOTTOM) {
+            box.y += box.h / 2;
+            box.h /= 2;
+            round.topLeft = round.topRight = 0;
+        }
+        CHyprColor tint = color(g_config.accent);
+        tint.a          = 0.16F;
+        addRect(ctx, box.translate(-mon->m_position).scale(scale).round(), tint, round, false, {});
+    }
+
+    void drawDrag(CRenderContext& ctx, PHLMONITOR mon) {
+        const auto tab = g_drag.tab.lock();
+        if (!g_drag.active || !tab || !tab->grouping().group())
+            return;
+
+        const auto pos     = g_pInputManager->getMouseCoordsInternal();
+        const auto scale   = mon->m_scale;
+        const auto toPx    = [&](CBox b) { return b.translate(-mon->m_position).scale(scale).round(); };
+        const auto accent  = color(g_config.accent);
+        const auto current = tab->grouping().group()->current();
+        SWindowRenderPresentation pres;
+
+        const CBox ghost{pos - g_drag.grab, g_drag.size};
+        if (!ghost.intersection(CBox{mon->m_position, mon->m_size}).empty()) {
+            const auto px     = toPx(ghost);
+            const auto iconPx = (int)std::round(g_config.iconSize->value() * scale);
+            const auto pad    = g_config.padding->value() * scale;
+            addRect(ctx, px, CHyprColor{0.161F, 0.145F, 0.133F, 0.94F}, Math::SCornerRadii{(float)(6 * scale)}, false, pres);
+            const double h = std::round(g_config.accentHeight->value() * scale);
+            addRect(ctx, CBox{px.x, px.y + px.h - h, px.w, h}, accent, Math::SCornerRadii{0.F}, false, pres);
+            double x = px.x + pad;
+            if (const auto icon = appIcon(tab->metadata().appID(), iconPx, g_config.iconTheme->value())) {
+                addTex(ctx, icon, CBox{x, px.y + (px.h - iconPx) / 2.0, (double)iconPx, (double)iconPx}, 1.F);
+                x += iconPx + 7 * scale;
+            }
+            const int maxW = std::max(0, (int)(px.x + px.w - 10 * scale - x));
+            if (const auto text = maxW > 8 ? titleTexture(tab, maxW, scale, true, true) : nullptr)
+                addTex(ctx, text, CBox{x, px.y + std::round((px.h - text->m_size.y) / 2.0), text->m_size.x, text->m_size.y}, 1.F);
+        }
+
+        // Where the release puts the tab: a place in its own bar, its own tile, or another tile.
+        const auto [owner, hit] = barAt(pos);
+        if (owner && owner->grouping().group() == tab->grouping().group()) {
+            const auto deco = sc<CHyprGroupBarDecoration*>(owner->presentation().decoration(DECORATION_GROUPBAR).get());
+            const auto g    = geometry(deco, deco->assignedBoxGlobal());
+            int        from = 0;
+            for (size_t i = 0; i < deco->m_dwGroupMembers.size(); ++i)
+                if (deco->m_dwGroupMembers[i] == tab)
+                    from = i;
+            const auto target = tabBox(g, hit.index);
+            const double x    = hit.index > from ? target.x + target.w - 1 : target.x - 1;
+            addRect(ctx, toPx(CBox{x, target.y, 2, target.h}), accent, Math::SCornerRadii{0.F}, false, pres);
+        } else
+            drawZone(ctx, mon, dropAt(pos, nullptr), current);
+    }
+
+    PHLWINDOW draggedWindow() {
+        return g_layoutManager->dragController()->mode() == MBIND_MOVE ? g_dragged.lock() : nullptr;
+    }
+
+    using DragBeginFn = void (*)(void*, SP<Layout::ITarget>, eMouseBindMode, std::optional<Layout::eRectCorner>, bool);
+
+    void hkDragBegin(void* self, SP<Layout::ITarget> target, eMouseBindMode mode, std::optional<Layout::eRectCorner> edge, bool grab) {
+        g_dragged = mode == MBIND_MOVE && target ? target->window() : nullptr;
+        ((DragBeginFn)g_dragHook->m_original)(self, target, mode, edge, grab);
+    }
+
+    using DropFn = bool (*)(void*);
+
+    bool hkDragEnd(void* self) {
+        const auto window = draggedWindow();
+        const auto drop   = window && g_config.enabled->value() ? dropAt(g_pInputManager->getMouseCoordsInternal(), window) : SDrop{};
+        const bool result = ((DropFn)g_dropHook->m_original)(self);
+        if (drop.target && drop.zone != ZONE_NONE) {
+            const auto call = std::format("tabs_drop(\"{}\", \"{:x}\", \"{:x}\")", zoneName(drop.zone), rc<uintptr_t>(window.get()), rc<uintptr_t>(drop.target.get()));
+            g_pEventLoopManager->doLater([call] { HyprlandAPI::invokeHyprctlCommand("eval", call); });
+        }
+        damageAll();
+        return result;
+    }
+
+    int luaDropZone(lua_State* L) {
+        const Vector2D pos{luaL_checknumber(L, 1), luaL_checknumber(L, 2)};
+        const auto     drop = dropAt(pos, nullptr);
+        lua_pushstring(L, zoneName(drop.zone));
+        if (drop.target)
+            Config::Lua::Objects::CLuaWindow::push(L, drop.target);
+        else
+            lua_pushnil(L);
+        return 2;
+    }
+
     void onMouseMove(const Vector2D& pos) {
         if (!g_config.enabled->value())
             return;
+        if (draggedWindow())
+            damageAll();
+        if (g_drag.tab)
+            onDragMove(pos);
         const auto [owner, hit] = barAt(pos);
         if (owner)
             setHover(owner, hit.index, hit.onClose);
@@ -641,6 +859,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         {&g_borderHook, "draw", "CHyprBorderDecoration::draw(", (void*)&hkBorderDraw},
         {&g_shadowHook, "draw", "CHyprDropShadowDecoration::draw(", (void*)&hkShadowDraw},
         {&g_roundHook, "rounding", "Desktop::View::CWindowPresentation::rounding(", (void*)&hkRounding},
+        {&g_dropHook, "dragEnd", "Layout::Supplementary::CDragStateController::dragEnd(", (void*)&hkDragEnd},
+        {&g_dragHook, "dragBegin", "Layout::Supplementary::CDragStateController::dragBegin(", (void*)&hkDragBegin},
     };
     for (const auto& [slot, name, prefix, target] : hooks) {
         const auto addr = findMember(name, prefix);
@@ -653,6 +873,15 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     static auto P1 = Event::bus()->m_events.input.mouse.move.listen([](Vector2D pos, Event::SCallbackInfo&) { onMouseMove(pos); });
     static auto P2 = Event::bus()->m_events.render.pre.listen([](PHLMONITOR) { syncCorners(); });
+    static auto P7 = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent e, Event::SCallbackInfo&) { onButton(e); });
+    static auto P8 = Event::bus()->m_events.render.stage.listen([](Event::SRenderStageEvent e) {
+        if (e.stage != RENDER_POST_WINDOWS || !e.context)
+            return;
+        if (g_drag.active)
+            drawDrag(e.context->get(), e.monitor);
+        else if (const auto window = draggedWindow())
+            drawZone(e.context->get(), e.monitor, dropAt(g_pInputManager->getMouseCoordsInternal(), window), nullptr);
+    });
     static auto P3 = Event::bus()->m_events.window.destroy.listen([](PHLWINDOWREF w) { forgetWindow(w.get()); });
     static auto P4 = Event::bus()->m_events.window.urgent.listen([](PHLWINDOW w) { damageGroupOf(w); });
     static auto P5 = Event::bus()->m_events.window.title.listen([](PHLWINDOW w) { damageGroupOf(w); });
@@ -666,6 +895,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_pEventLoopManager->addTimer(g_marqueeTimer);
 
     HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "tab_at", luaTabAt);
+    HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "drop_zone", luaDropZone);
 
     HyprlandAPI::reloadConfig();
 
