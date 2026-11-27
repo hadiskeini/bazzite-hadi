@@ -15,6 +15,7 @@
 #include <hyprland/src/config/values/types/IntValue.hpp>
 #include <hyprland/src/config/values/types/ColorValue.hpp>
 #include <hyprland/src/config/values/types/StringValue.hpp>
+#include <hyprland/src/config/values/types/FloatValue.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 #include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprland/src/render/pass/RectPassElement.hpp>
@@ -72,6 +73,7 @@ namespace {
     CFunctionHook* g_roundHook  = nullptr;
     CFunctionHook* g_dropHook   = nullptr;
     CFunctionHook* g_dragHook   = nullptr;
+    CFunctionHook* g_shadowDataHook = nullptr;
     PHLWINDOWREF   g_dragged;
 
     // The window whose border or shadow is being drawn: its outline also goes around the bar, so it keeps round top corners.
@@ -82,6 +84,7 @@ namespace {
         SP<Config::Values::CColorValue>  strip, focused, current, inactive, hover, urgent, accent, close, closeHover;
         SP<Config::Values::CIntValue>    accentHeight, iconSize, padding, compactWidth, maxWidth;
         SP<Config::Values::CStringValue> iconTheme;
+        SP<Config::Values::CFloatValue>  tiledShadow;
     } g_config;
 
     struct STextKey {
@@ -781,6 +784,31 @@ namespace {
         outlineDraw(g_shadowHook, self, ctx, mon, a, pres);
     }
 
+    using ShadowDataFn = SShadowRenderData (*)(CHyprDropShadowDecoration*, CRenderContext&, PHLMONITOR, float const&, const SWindowRenderPresentation&);
+
+    // A tiled window lies closer to the wallpaper than a floating one: the same shadow with its range and offset scaled down.
+    SShadowRenderData hkShadowData(CHyprDropShadowDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
+        static auto PRANGE  = CConfigValue<Config::INTEGER>("decoration:shadow:range");
+        static auto PSCALE  = CConfigValue<Config::FLOAT>("decoration:shadow:scale");
+        static auto POFFSET = CConfigValue<Config::VEC2>("decoration:shadow:offset");
+
+        auto        data   = ((ShadowDataFn)g_shadowDataHook->m_original)(self, ctx, mon, a, pres);
+        const auto  window = self->m_window.lock();
+        const float factor = std::clamp(g_config.tiledShadow->value(), 0.F, 1.F);
+        if (!data.valid || !window || window->isFloating() || factor >= 1.F || !g_config.enabled->value())
+            return data;
+
+        const double   shrink = (1.0 - factor) * mon->m_scale;
+        const double   inset  = *PRANGE * std::clamp(*PSCALE, 0.F, 1.F) * shrink;
+        const Vector2D center = data.fullBox.middle() - Vector2D{(*POFFSET).x, (*POFFSET).y} * shrink;
+        const Vector2D size   = data.fullBox.size() - Vector2D{inset, inset} * 2;
+        if (size.x < 1 || size.y < 1)
+            return data;
+        data.fullBox = CBox{center - size / 2, size}.round();
+        data.size    = std::max(1, (int)std::round(data.size * factor));
+        return data;
+    }
+
     Math::SCornerRadii hkRounding(Desktop::View::CWindowPresentation* self) {
         auto r = ((RoundFn)g_roundHook->m_original)(self);
         if (g_outline && &g_outline->presentation() == self) {
@@ -845,11 +873,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.padding      = makeShared<CIntValue>("plugin:tabbar:padding", "Space left of the icon", 10);
     g_config.compactWidth = makeShared<CIntValue>("plugin:tabbar:compact_width", "Below this tab width only the icon shows", 90);
     g_config.maxWidth     = makeShared<CIntValue>("plugin:tabbar:max_width", "Largest tab width", 240);
+    g_config.tiledShadow  = makeShared<CFloatValue>("plugin:tabbar:tiled_shadow", "Shadow of tiled windows relative to floating ones (range and offset), 1 = the same", 0.35);
     g_config.iconTheme    = makeShared<CStringValue>("plugin:tabbar:icon_theme", "Icon theme, hicolor is the fallback", "Adwaita");
 
     for (const auto& v : std::initializer_list<SP<IValue>>{g_config.enabled, g_config.strip, g_config.focused, g_config.current, g_config.inactive, g_config.hover, g_config.urgent,
                                                            g_config.accent, g_config.close, g_config.closeHover, g_config.accentHeight, g_config.iconSize, g_config.padding,
-                                                           g_config.compactWidth, g_config.maxWidth, g_config.iconTheme})
+                                                           g_config.compactWidth, g_config.maxWidth, g_config.iconTheme, g_config.tiledShadow})
         HyprlandAPI::addConfigValueV2(PHANDLE, v);
 
     const std::vector<std::tuple<CFunctionHook**, const char*, const char*, void*>> hooks = {
@@ -860,6 +889,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         {&g_shadowHook, "draw", "CHyprDropShadowDecoration::draw(", (void*)&hkShadowDraw},
         {&g_roundHook, "rounding", "Desktop::View::CWindowPresentation::rounding(", (void*)&hkRounding},
         {&g_dropHook, "dragEnd", "Layout::Supplementary::CDragStateController::dragEnd(", (void*)&hkDragEnd},
+        {&g_shadowDataHook, "getRenderData", "CHyprDropShadowDecoration::getRenderData(", (void*)&hkShadowData},
         {&g_dragHook, "dragBegin", "Layout::Supplementary::CDragStateController::dragBegin(", (void*)&hkDragBegin},
     };
     for (const auto& [slot, name, prefix, target] : hooks) {
