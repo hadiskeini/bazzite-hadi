@@ -8,6 +8,7 @@
 #include <hyprland/src/desktop/view/Group.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/desktop/rule/windowRule/WindowRuleApplicator.hpp>
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/config/shared/complex/CornersData.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
@@ -17,10 +18,14 @@
 #include <hyprland/src/config/values/types/StringValue.hpp>
 #include <hyprland/src/config/values/types/FloatValue.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/render/pass/PassElement.hpp>
 #include <hyprland/src/render/pass/TexPassElement.hpp>
 #include <hyprland/src/render/pass/RectPassElement.hpp>
+#include <hyprland/src/render/pass/BorderPassElement.hpp>
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 #include <hyprland/src/render/decorations/DecorationPositioner.hpp>
+#include <hyprland/src/render/decorations/AnimatedDecorationGradient.hpp>
+#include <hyprland/src/render/decorations/CHyprBorderDecoration.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
 #include <hyprland/src/event/EventBus.hpp>
@@ -29,6 +34,7 @@
 #include <hyprland/src/ipc/s2/S2.hpp>
 #include <hyprland/src/layout/LayoutManager.hpp>
 #include <hyprland/src/layout/supplementary/DragController.hpp>
+#include <hyprland/src/layout/target/WindowTarget.hpp>
 #include <hyprland/src/state/MonitorState.hpp>
 #include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/config/lua/objects/LuaWindow.hpp>
@@ -37,13 +43,6 @@ extern "C" {
 #include <lua.h>
 #include <lauxlib.h>
 }
-
-// The plugin reads the group bar's geometry and members, which upstream keeps private.
-#define private public
-#include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
-#include <hyprland/src/render/decorations/CHyprBorderDecoration.hpp>
-#include <hyprland/src/render/decorations/CHyprDropShadowDecoration.hpp>
-#undef private
 
 #include <linux/input-event-codes.h>
 #include <cairo/cairo.h>
@@ -55,30 +54,11 @@ extern "C" {
 #include "icons.hpp"
 
 using namespace Render;
+using Desktop::Types::PRIORITY_SET_PROP;
 
 inline HANDLE PHANDLE = nullptr;
 
 namespace {
-    using DrawFn  = void (*)(CHyprGroupBarDecoration*, CRenderContext&, PHLMONITOR, float const&, const SWindowRenderPresentation&);
-    using InputFn = bool (*)(CHyprGroupBarDecoration*, const eInputType, const Vector2D&, std::any);
-    using PosFn   = SDecorationPositioningInfo (*)(CHyprGroupBarDecoration*);
-    using DecoFn  = void (*)(IHyprWindowDecoration*, CRenderContext&, PHLMONITOR, float const&, const SWindowRenderPresentation&);
-    using RoundFn = Math::SCornerRadii (*)(Desktop::View::CWindowPresentation*);
-
-    CFunctionHook* g_drawHook   = nullptr;
-    CFunctionHook* g_inputHook  = nullptr;
-    CFunctionHook* g_posHook    = nullptr;
-    CFunctionHook* g_borderHook = nullptr;
-    CFunctionHook* g_shadowHook = nullptr;
-    CFunctionHook* g_roundHook  = nullptr;
-    CFunctionHook* g_dropHook   = nullptr;
-    CFunctionHook* g_dragHook   = nullptr;
-    CFunctionHook* g_shadowDataHook = nullptr;
-    PHLWINDOWREF   g_dragged;
-
-    // The window whose border or shadow is being drawn: its outline also goes around the bar, so it keeps round top corners.
-    Desktop::View::CWindow* g_outline = nullptr;
-
     struct {
         SP<Config::Values::CBoolValue>   enabled;
         SP<Config::Values::CColorValue>  strip, focused, current, inactive, hover, urgent, accent, close, closeHover;
@@ -102,7 +82,6 @@ namespace {
 
     std::unordered_map<std::string, STextCache>   g_text;
     std::unordered_map<int, SP<Render::ITexture>> g_closeTex;
-    std::unordered_map<Desktop::View::CWindow*, std::pair<PHLWINDOWREF, std::string>> g_rounded;
 
     struct {
         PHLWINDOWREF owner;
@@ -129,37 +108,257 @@ namespace {
         return CHyprColor{sc<uint64_t>(v->value())};
     }
 
-    struct SBarGeometry {
-        CBox  box;
-        float tabWidth = 0;
-        float height   = 0;
-        float gap      = 0;
-        float top      = 0;
+    Math::SCornerRadii globalRounding() {
+        static auto PROUNDING = CConfigValue<Config::IComplexConfigValue>("decoration:rounding");
+        return Math::SCornerRadii{*sc<Config::CCornersData*>(PROUNDING.ptr())};
+    }
+
+    // The plugin sets these props itself; its own border and shadow follow the user's rules only.
+    template <typename T>
+    Desktop::Types::COverridableVar<T> withoutOwnProp(const Desktop::Types::COverridableVar<T>& var) {
+        auto copy = var;
+        copy.unset(PRIORITY_SET_PROP);
+        return copy;
+    }
+
+    class CTabBar : public IHyprWindowDecoration {
+      public:
+        explicit CTabBar(PHLWINDOW window) : IHyprWindowDecoration(window), m_owner(window) {}
+
+        SDecorationPositioningInfo getPositioningInfo() override;
+        void                       onPositioningReply(const SDecorationPositioningReply& reply) override {
+            m_assigned = reply.assignedGeometry;
+        }
+        void            draw(CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) override;
+        eDecorationType getDecorationType() override {
+            return DECORATION_CUSTOM;
+        }
+        void             updateWindow(PHLWINDOW) override;
+        void             damageEntire() override;
+        bool             onInputOnDeco(const eInputType type, const Vector2D& pos, std::any data) override;
+        eDecorationLayer getDecorationLayer() override {
+            return DECORATION_LAYER_OVER;
+        }
+        // Part of the window: the shadow and the border go around the bar too.
+        uint64_t getDecorationFlags() override {
+            return DECORATION_ALLOWS_MOUSE_INPUT | DECORATION_PART_OF_MAIN_WINDOW;
+        }
+        std::string getDisplayName() override {
+            return "tabbar";
+        }
+
+        bool visible() const;
+        CBox assignedBoxGlobal() const;
+        CBox assignedBoxGlobal(const SWindowRenderPresentation& pres) const;
+
+        PHLWINDOWREF              m_owner;
+        std::vector<PHLWINDOWREF> m_members;
+
+      private:
+        void reposition();
+
+        CBox                m_assigned;
+        std::optional<bool> m_lastVisible;
     };
 
-    SBarGeometry geometry(CHyprGroupBarDecoration* deco, const CBox& assigned) {
+    class CTabBorder : public IHyprWindowDecoration {
+      public:
+        explicit CTabBorder(PHLWINDOW window) : IHyprWindowDecoration(window), m_owner(window), m_gradient(Config::CGradientValueData{CHyprColor(sc<uint64_t>(0))}) {}
+
+        SDecorationPositioningInfo getPositioningInfo() override {
+            return {};
+        }
+        void            onPositioningReply(const SDecorationPositioningReply&) override {}
+        void            draw(CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) override;
+        eDecorationType getDecorationType() override {
+            return DECORATION_CUSTOM;
+        }
+        void             updateWindow(PHLWINDOW) override {}
+        void             damageEntire() override;
+        eDecorationLayer getDecorationLayer() override {
+            return DECORATION_LAYER_OVER;
+        }
+        uint64_t getDecorationFlags() override {
+            return 0;
+        }
+        std::string getDisplayName() override {
+            return "tabbar border";
+        }
+        void initializeAnimations() override {
+            m_gradient.initializeAnimations(m_owner.lock(), self(), "border", "borderangle");
+        }
+        void updateState() override;
+        void onWindowMap() override {
+            m_gradient.onWindowMap();
+        }
+        void onWindowFocus() override {
+            m_gradient.onWindowFocus();
+        }
+
+      private:
+        CHyprBorderDecoration* hyprlandBorder() const;
+
+        PHLWINDOWREF                m_owner;
+        CAnimatedDecorationGradient m_gradient;
+    };
+
+    class CTabShadow : public IHyprWindowDecoration {
+      public:
+        explicit CTabShadow(PHLWINDOW window) : IHyprWindowDecoration(window), m_owner(window) {}
+
+        SDecorationPositioningInfo getPositioningInfo() override;
+        void                       onPositioningReply(const SDecorationPositioningReply&) override {
+            updateWindow(m_owner.lock());
+        }
+        void            draw(CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) override;
+        eDecorationType getDecorationType() override {
+            return DECORATION_CUSTOM;
+        }
+        void             updateWindow(PHLWINDOW) override;
+        void             damageEntire() override;
+        eDecorationLayer getDecorationLayer() override {
+            return DECORATION_LAYER_BOTTOM;
+        }
+        uint64_t getDecorationFlags() override {
+            return DECORATION_NON_SOLID;
+        }
+        std::string getDisplayName() override {
+            return "tabbar shadow";
+        }
+        void initializeAnimations() override {
+            m_gradient.initializeAnimations(m_owner.lock(), self(), "fadeShadow", "shadowangle");
+        }
+        void updateState() override;
+        void onWindowMap() override {
+            m_gradient.onWindowMap();
+        }
+        void onWindowFocus() override {
+            m_gradient.onWindowFocus();
+        }
+
+        void render(CRenderContext& ctx, PHLMONITOR mon, float a, const SWindowRenderPresentation& pres);
+
+      private:
+        bool                        canRender() const;
+
+        PHLWINDOWREF                m_owner;
+        CAnimatedDecorationGradient m_gradient;
+        SBoxExtents                 m_extents, m_reportedExtents;
+        Vector2D                    m_lastPos, m_lastSize;
+        CBox                        m_lastBoxWithDecos;
+    };
+
+    // Hyprland's shadow element calls back only into its own decoration, so the shadow has its own element.
+    class CTabShadowPass : public IPassElement {
+      public:
+        CTabShadowPass(WP<CTabShadow> deco, float a, const SWindowRenderPresentation& pres) : m_deco(deco), m_a(a), m_pres(pres) {}
+
+        std::vector<UP<IPassElement>> draw(CRenderContext& ctx) override {
+            if (const auto deco = m_deco.lock())
+                deco->render(ctx, ctx.m_data.pMonitor.lock(), m_a, m_pres);
+            return {};
+        }
+        bool needsLiveBlur(CRenderContext&) override {
+            return false;
+        }
+        bool needsPrecomputeBlur(CRenderContext&) override {
+            return false;
+        }
+        const char* passName() override {
+            return "CTabShadowPass";
+        }
+        ePassElementType type() override {
+            return EK_CUSTOM;
+        }
+
+      private:
+        WP<CTabShadow>            m_deco;
+        float                     m_a;
+        SWindowRenderPresentation m_pres;
+    };
+
+    struct SDecorations {
+        WP<CTabBar>    bar;
+        WP<CTabBorder> border;
+        WP<CTabShadow> shadow;
+    };
+    std::unordered_map<Desktop::View::CWindow*, SDecorations> g_decorations;
+
+    // What the plugin changed on a window: its shadow replaces Hyprland's, and a window with a bar gets the plugin's border and square top corners.
+    struct SApplied {
+        PHLWINDOWREF window;
+        bool         shadow = false;
+        std::string  rounding;
+    };
+    std::unordered_map<Desktop::View::CWindow*, SApplied> g_applied;
+
+    CTabBar* barOf(const PHLWINDOW& w) {
+        if (!w)
+            return nullptr;
+        const auto it = g_decorations.find(w.get());
+        return it == g_decorations.end() ? nullptr : it->second.bar.get();
+    }
+
+    bool hasBar(const PHLWINDOW& w) {
+        const auto bar = barOf(w);
+        return bar && bar->visible();
+    }
+
+    void attach(const PHLWINDOW& w) {
+        if (!validMapped(w) || barOf(w))
+            return;
+        auto shadow = makeShared<CTabShadow>(w);
+        auto bar    = makeShared<CTabBar>(w);
+        auto border = makeShared<CTabBorder>(w);
+        g_decorations[w.get()] = {bar, border, shadow};
+        HyprlandAPI::addWindowDecoration(PHANDLE, w, std::move(shadow));
+        HyprlandAPI::addWindowDecoration(PHANDLE, w, std::move(bar));
+        HyprlandAPI::addWindowDecoration(PHANDLE, w, std::move(border));
+    }
+
+    struct SBarGeometry {
+        CBox   box;
+        float  tabWidth = 0;
+        float  height   = 0;
+        float  gap      = 0;
+        float  top      = 0;
+        size_t count    = 1;
+        bool   capped   = false;
+    };
+
+    // The tabs have whole device pixels and a gap of one device pixel, where the strip shows through.
+    SBarGeometry geometry(const CTabBar* bar, const CBox& assigned) {
         static auto PHEIGHT          = CConfigValue<Config::INTEGER>("group:groupbar:height");
         static auto PINDICATORGAP    = CConfigValue<Config::INTEGER>("group:groupbar:indicator_gap");
         static auto PINDICATORHEIGHT = CConfigValue<Config::INTEGER>("group:groupbar:indicator_height");
         static auto POUTERGAP        = CConfigValue<Config::INTEGER>("group:groupbar:gaps_out");
-        static auto PINNERGAP        = CConfigValue<Config::INTEGER>("group:groupbar:gaps_in");
+
+        const auto   owner = bar->m_owner.lock();
+        const auto   mon   = owner ? owner->m_monitor.lock() : nullptr;
+        const double scale = mon ? mon->m_scale : 1.0;
 
         SBarGeometry g;
-        g.box            = assigned;
-        const auto count = std::max<size_t>(1, deco->m_dwGroupMembers.size());
-        g.gap            = *PINNERGAP;
-        g.tabWidth       = std::min<float>(g_config.maxWidth->value(), (assigned.w - g.gap * (count - 1)) / count);
-        g.height         = *PHEIGHT;
-        g.top            = assigned.y + assigned.h - (*POUTERGAP + *PINDICATORHEIGHT + *PINDICATORGAP + *PHEIGHT);
+        g.box               = assigned;
+        g.count             = std::max<size_t>(1, bar->m_members.size());
+        const double fit    = std::floor((std::round(assigned.w * scale) - (g.count - 1)) / g.count);
+        const double capPx  = std::floor(g_config.maxWidth->value() * scale);
+        g.capped            = capPx < fit;
+        g.tabWidth          = std::max(0.0, std::min(fit, capPx)) / scale;
+        g.gap               = 1.0 / scale;
+        g.height            = *PHEIGHT;
+        g.top               = assigned.y + assigned.h - (*POUTERGAP + *PINDICATORHEIGHT + *PINDICATORGAP + *PHEIGHT);
         return g;
     }
 
     double tabsEnd(const SBarGeometry& g, size_t count) {
-        return g.box.x + count * (g.tabWidth + g.gap) - g.gap;
+        return g.capped ? g.box.x + count * (g.tabWidth + g.gap) - g.gap : g.box.x + g.box.w;
     }
 
+    // Without the cap, the last tab takes the pixels that the even split leaves over.
     CBox tabBox(const SBarGeometry& g, size_t i) {
-        return {g.box.x + i * (g.tabWidth + g.gap), g.top, g.tabWidth, g.height};
+        const double x = g.box.x + i * (g.tabWidth + g.gap);
+        const double w = !g.capped && i + 1 == g.count ? g.box.x + g.box.w - x : g.tabWidth;
+        return {x, g.top, w, g.height};
     }
 
     CBox closeBox(const CBox& tab) {
@@ -169,11 +368,6 @@ namespace {
 
     bool compact(const CBox& tab) {
         return tab.w < g_config.compactWidth->value();
-    }
-
-    Math::SCornerRadii globalRounding() {
-        static auto PROUNDING = CConfigValue<Config::IComplexConfigValue>("decoration:rounding");
-        return Math::SCornerRadii{*sc<Config::CCornersData*>(PROUNDING.ptr())};
     }
 
     SP<Render::ITexture> closeTexture(int px, uint64_t rgba) {
@@ -249,7 +443,7 @@ namespace {
     }
 
     // Nullopt before the first delay ends (the ellipsized title shows); else the scroll offset in pixels.
-    std::optional<double> marqueeOffset(CHyprGroupBarDecoration* self, double overflow, float scale) {
+    std::optional<double> marqueeOffset(CTabBar* self, double overflow, float scale) {
         using namespace std::chrono;
         const double elapsed = duration<double>(steady_clock::now() - g_hover.since).count();
         if (elapsed < MARQUEE_DELAY) {
@@ -271,35 +465,87 @@ namespace {
         return std::round(overflow);
     }
 
-    void hkDraw(CHyprGroupBarDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& alpha, const SWindowRenderPresentation& pres) {
-        const float& a = alpha;
-        if (!g_config.enabled->value()) {
-            ((DrawFn)g_drawHook->m_original)(self, ctx, mon, a, pres);
-            return;
-        }
+    bool CTabBar::visible() const {
+        static auto PDISABLE = CConfigValue<Config::BOOL>("group:groupbar:disable_when_only");
+        const auto  w        = m_owner.lock();
+        return g_config.enabled->value() && w && w->grouping().group() && !m_members.empty() && (!*PDISABLE || m_members.size() > 1) &&
+            w->m_ruleApplicator->decorate().valueOrDefault();
+    }
 
+    SDecorationPositioningInfo CTabBar::getPositioningInfo() {
+        static auto PHEIGHT          = CConfigValue<Config::INTEGER>("group:groupbar:height");
+        static auto PINDICATORGAP    = CConfigValue<Config::INTEGER>("group:groupbar:indicator_gap");
+        static auto PINDICATORHEIGHT = CConfigValue<Config::INTEGER>("group:groupbar:indicator_height");
+        static auto POUTERGAP        = CConfigValue<Config::INTEGER>("group:groupbar:gaps_out");
+        static auto PKEEPUPPERGAP    = CConfigValue<Config::BOOL>("group:groupbar:keep_upper_gap");
+
+        SDecorationPositioningInfo info;
+        info.policy   = DECORATION_POSITION_STICKY;
+        info.edges    = DECORATION_EDGE_TOP;
+        info.priority = 10005;
+        info.reserved = true;
+        if (visible())
+            info.desiredExtents = {Vector2D{0.0, (double)(*POUTERGAP * (1 + *PKEEPUPPERGAP) + *PINDICATORHEIGHT + *PINDICATORGAP + *PHEIGHT)}, Vector2D{0.0, 0.0}};
+        return info;
+    }
+
+    void CTabBar::reposition() {
+        const bool VISIBLE = visible();
+        if (!m_lastVisible.has_value() || VISIBLE != *m_lastVisible) {
+            m_lastVisible = VISIBLE;
+            g_pDecorationPositioner->repositionDeco(this);
+        }
+    }
+
+    // Hyprland calls this on each join, leave and tab switch, so the bar gets its place in the same frame.
+    void CTabBar::updateWindow(PHLWINDOW) {
+        const auto w = m_owner.lock();
+        m_members.clear();
+        if (w && w->grouping().group())
+            for (const auto& member : w->grouping().group()->windows())
+                m_members.emplace_back(member);
+        reposition();
+        damageEntire();
+    }
+
+    CBox CTabBar::assignedBoxGlobal() const {
+        const auto w = m_owner.lock();
+        return w ? assignedBoxGlobal(w->presentation().renderPresentation()) : CBox{};
+    }
+
+    CBox CTabBar::assignedBoxGlobal(const SWindowRenderPresentation& pres) const {
+        CBox box = m_assigned;
+        box.translate(g_pDecorationPositioner->getEdgeDefinedPoint(DECORATION_EDGE_TOP, m_owner));
+        return box.translate(pres.workspaceOffset);
+    }
+
+    void CTabBar::damageEntire() {
+        const auto w = m_owner.lock();
+        if (!w)
+            return;
+        auto box = assignedBoxGlobal();
+        box.translate(w->presentation().floatingOffset());
+        g_pHyprRenderer->damageBox(box);
+    }
+
+    void CTabBar::draw(CRenderContext& ctx, PHLMONITOR mon, float const& alpha, const SWindowRenderPresentation& pres) {
         static auto PBLUR = CConfigValue<Config::BOOL>("group:groupbar:blur");
 
-        const bool  VISIBLE = self->visible();
-        if (!self->m_bLastVisibilityStatus.has_value() || VISIBLE != *self->m_bLastVisibilityStatus) {
-            g_pDecorationPositioner->repositionDeco(self);
-            self->m_bLastVisibilityStatus = VISIBLE;
-        }
-        if (!VISIBLE || !self->m_window || !self->m_window->grouping().group())
+        reposition();
+        const auto owner = m_owner.lock();
+        if (!visible() || !owner)
             return;
 
-        const auto ASSIGNED = self->assignedBoxGlobal(pres);
-        const auto g        = geometry(self, ASSIGNED);
-        self->m_barWidth    = g.tabWidth;
-        self->m_barHeight   = ASSIGNED.h;
+        const auto ASSIGNED = assignedBoxGlobal(pres);
+        const auto g        = geometry(this, ASSIGNED);
 
         const auto  scale    = mon->m_scale;
         const auto  offset   = pres.floatingOffset - mon->m_position;
         const auto  focused  = Desktop::focusState()->window();
-        const auto  current  = self->m_window->grouping().group()->current();
+        const auto  current  = owner->grouping().group()->current();
         const bool  groupHas = focused && current == focused;
         const auto  R        = globalRounding();
-        const auto  count    = self->m_dwGroupMembers.size();
+        const auto  count    = m_members.size();
         const bool  blur     = *PBLUR;
         const auto  iconPx   = (int)std::round(g_config.iconSize->value() * scale);
         const auto  padding  = g_config.padding->value();
@@ -308,24 +554,24 @@ namespace {
         {
             CBox       strip = CBox{g.box.x, g.top, g.box.w, g.height}.translate(offset).scale(scale).round();
             CHyprColor fill  = color(g_config.strip);
-            fill.a *= a;
+            fill.a *= alpha;
             // A tiled bar has only the wallpaper behind it, so the cached wallpaper blur is enough.
-            addRect(ctx, strip, fill, Math::SCornerRadii{R.topLeft * scale, R.topRight * scale, 0.F, 0.F}, blur, pres, !self->m_window->isFloating());
+            addRect(ctx, strip, fill, Math::SCornerRadii{R.topLeft * scale, R.topRight * scale, 0.F, 0.F}, blur, pres, !owner->isFloating());
         }
 
         for (size_t i = 0; i < count; ++i) {
-            const auto w = self->m_dwGroupMembers[i].lock();
+            const auto w = m_members[i].lock();
             if (!w)
                 continue;
 
-            const bool isCurrent = w == current;
+            const bool  isCurrent = w == current;
             const float tabA      = g_drag.active && g_drag.tab == w ? 0.35F : 1.F;
             const float a         = alpha * tabA;
-            const bool isHover   = g_hover.owner == self->m_window && g_hover.index == (int)i;
-            const bool isUrgent  = !isCurrent && (w->m_hints & Desktop::View::WINDOW_HINT_URGENT);
+            const bool  isHover   = g_hover.owner == m_owner && g_hover.index == (int)i;
+            const bool  isUrgent  = !isCurrent && (w->m_hints & Desktop::View::WINDOW_HINT_URGENT);
 
-            CBox       tab = tabBox(g, i);
-            CBox       px  = tab.copy().translate(offset).scale(scale).round();
+            CBox tab = tabBox(g, i);
+            CBox px  = tab.copy().translate(offset).scale(scale).round();
 
             Math::SCornerRadii round{0.F};
             if (i == 0)
@@ -346,20 +592,20 @@ namespace {
             }
 
             if (isCurrent && groupHas && g_config.accentHeight->value() > 0) {
-                const double h = std::round(g_config.accentHeight->value() * scale);
+                const double h  = std::round(g_config.accentHeight->value() * scale);
                 CHyprColor   ac = color(g_config.accent);
                 ac.a *= a;
                 addRect(ctx, CBox{px.x, px.y + px.h - h, px.w, h}, ac, Math::SCornerRadii{0.F}, false, pres);
             }
 
-            const auto icon = appIcon(w->metadata().appID(), iconPx, theme);
+            const auto icon  = appIcon(w->metadata().appID(), iconPx, theme);
             const bool small = compact(tab);
             double     x     = px.x + (small ? (px.w - iconPx) / 2.0 : padding * scale);
             if (icon) {
                 const double iconY = px.y + (px.h - iconPx) / 2.0;
                 addTex(ctx, icon, CBox{x, iconY, (double)iconPx, (double)iconPx}, a);
                 if (isUrgent) {
-                    const double     d = std::round(7 * scale);
+                    const double     d    = std::round(7 * scale);
                     const CHyprColor tint = color(g_config.urgent);
                     addRect(ctx, CBox{x + iconPx - d * 0.6, iconY - d * 0.3, d, d}.round(), CHyprColor{(float)tint.r, (float)tint.g, (float)tint.b, a},
                             Math::SCornerRadii{(float)d / 2}, false, pres);
@@ -369,20 +615,20 @@ namespace {
                 x = px.x + 4 * scale;
 
             if (!small || !icon) {
-                const bool   showClose = isHover && !small;
-                const double right     = px.x + px.w - (showClose ? 28 : 10) * scale;
-                const int    maxW      = std::max(0, (int)(right - x));
-                const bool   bright    = isCurrent || isHover || isUrgent;
-                const bool   bold      = isCurrent && groupHas;
-                auto         text      = maxW > 8 ? titleTexture(w, maxW, scale, bright, bold) : nullptr;
-                double       shift     = 0;
+                const bool          showClose = isHover && !small;
+                const double        right     = px.x + px.w - (showClose ? 28 : 10) * scale;
+                const int           maxW      = std::max(0, (int)(right - x));
+                const bool          bright    = isCurrent || isHover || isUrgent;
+                const bool          bold      = isCurrent && groupHas;
+                auto                text      = maxW > 8 ? titleTexture(w, maxW, scale, bright, bold) : nullptr;
+                double              shift     = 0;
                 std::optional<CBox> clip;
                 if (text && isHover) {
                     const auto full = titleTexture(w, 0, scale, bright, bold, true);
                     if (full && full->m_size.x > maxW)
-                        if (const auto offset = marqueeOffset(self, full->m_size.x - maxW, scale)) {
+                        if (const auto marquee = marqueeOffset(this, full->m_size.x - maxW, scale)) {
                             text  = full;
-                            shift = *offset;
+                            shift = *marquee;
                             clip  = CBox{x, px.y, (double)maxW, px.h};
                         }
                 }
@@ -391,7 +637,7 @@ namespace {
             }
 
             if (isHover && !small) {
-                const auto cb  = closeBox(tab).translate(offset).scale(scale).round();
+                const auto cb = closeBox(tab).translate(offset).scale(scale).round();
                 if (g_hover.onClose)
                     addRect(ctx, cb, color(g_config.closeHover), Math::SCornerRadii{(float)(5 * scale)}, false, pres);
                 addTex(ctx, closeTexture((int)cb.w, g_config.close->value()), cb, a);
@@ -400,29 +646,27 @@ namespace {
     }
 
     struct SHit {
-        CHyprGroupBarDecoration* deco = nullptr;
-        int                      index = -1;
-        bool                     onClose = false;
+        CTabBar* bar     = nullptr;
+        int      index   = -1;
+        bool     onClose = false;
     };
 
-    SHit hitTest(CHyprGroupBarDecoration* deco, const Vector2D& pos) {
-        if (!deco || !deco->visible() || !deco->m_window)
+    SHit hitTest(CTabBar* bar, const Vector2D& pos) {
+        if (!bar || !bar->visible())
             return {};
-        const auto g = geometry(deco, deco->assignedBoxGlobal());
-        for (size_t i = 0; i < deco->m_dwGroupMembers.size(); ++i) {
+        const auto g = geometry(bar, bar->assignedBoxGlobal());
+        for (size_t i = 0; i < bar->m_members.size(); ++i) {
             const auto tab = tabBox(g, i);
             if (!tab.containsPoint(pos))
                 continue;
-            return {deco, (int)i, !compact(tab) && closeBox(tab).containsPoint(pos)};
+            return {bar, (int)i, !compact(tab) && closeBox(tab).containsPoint(pos)};
         }
         return {};
     }
 
     void damageOwner(const PHLWINDOWREF& owner) {
-        if (!owner)
-            return;
-        if (const auto deco = owner->presentation().decoration(DECORATION_GROUPBAR))
-            deco->damageEntire();
+        if (const auto bar = barOf(owner.lock()))
+            bar->damageEntire();
     }
 
     void setHover(PHLWINDOWREF owner, int index, bool onClose) {
@@ -440,11 +684,8 @@ namespace {
         for (const auto& w : Desktop::windowState()->windows()) {
             if (!w->mapped() || w->isHidden() || !w->m_workspace || !w->m_workspace->visible() || !w->grouping().group() || w->grouping().group()->current() != w)
                 continue;
-            const auto deco = w->presentation().decoration(DECORATION_GROUPBAR);
-            if (!deco)
-                continue;
-            const auto hit = hitTest(sc<CHyprGroupBarDecoration*>(deco.get()), pos);
-            if (hit.deco)
+            const auto hit = hitTest(barOf(w), pos);
+            if (hit.bar)
                 return {w, hit};
         }
         return {nullptr, {}};
@@ -473,9 +714,8 @@ namespace {
         const auto [owner, hit] = barAt(pos);
         if (!owner || hit.onClose || hyprlandDragging())
             return;
-        const auto deco = sc<CHyprGroupBarDecoration*>(owner->presentation().decoration(DECORATION_GROUPBAR).get());
-        const auto tab  = tabBox(geometry(deco, deco->assignedBoxGlobal()), hit.index);
-        g_drag          = {owner->grouping().group()->fromIndex(hit.index), pos, pos - tab.pos(), tab.size(), false};
+        const auto tab = tabBox(geometry(hit.bar, hit.bar->assignedBoxGlobal()), hit.index);
+        g_drag         = {owner->grouping().group()->fromIndex(hit.index), pos, pos - tab.pos(), tab.size(), false};
     }
 
     void onDragMove(const Vector2D& pos) {
@@ -535,9 +775,9 @@ namespace {
     // The window and the bar above it, in logical global coordinates.
     CBox tileBox(const PHLWINDOW& w) {
         CBox box{w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT), w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT)};
-        if (const auto deco = w->presentation().decoration(DECORATION_GROUPBAR); deco && sc<CHyprGroupBarDecoration*>(deco.get())->visible()) {
-            const auto bar = sc<CHyprGroupBarDecoration*>(deco.get())->assignedBoxGlobal();
-            box            = CBox{box.x, bar.y, box.w, box.y + box.h - bar.y};
+        if (const auto bar = barOf(w); bar && bar->visible()) {
+            const auto assigned = bar->assignedBoxGlobal();
+            box                 = CBox{box.x, assigned.y, box.w, box.y + box.h - assigned.y};
         }
         return box;
     }
@@ -570,11 +810,11 @@ namespace {
         if (!g_drag.active || !tab || !tab->grouping().group())
             return;
 
-        const auto pos     = g_pInputManager->getMouseCoordsInternal();
-        const auto scale   = mon->m_scale;
-        const auto toPx    = [&](CBox b) { return b.translate(-mon->m_position).scale(scale).round(); };
-        const auto accent  = color(g_config.accent);
-        const auto current = tab->grouping().group()->current();
+        const auto                pos     = g_pInputManager->getMouseCoordsInternal();
+        const auto                scale   = mon->m_scale;
+        const auto                toPx    = [&](CBox b) { return b.translate(-mon->m_position).scale(scale).round(); };
+        const auto                accent  = color(g_config.accent);
+        const auto                current = tab->grouping().group()->current();
         SWindowRenderPresentation pres;
 
         const CBox ghost{pos - g_drag.grab, g_drag.size};
@@ -598,43 +838,47 @@ namespace {
         // Where the release puts the tab: a place in its own bar, its own tile, or another tile.
         const auto [owner, hit] = barAt(pos);
         if (owner && owner->grouping().group() == tab->grouping().group()) {
-            const auto deco = sc<CHyprGroupBarDecoration*>(owner->presentation().decoration(DECORATION_GROUPBAR).get());
-            const auto g    = geometry(deco, deco->assignedBoxGlobal());
+            const auto g    = geometry(hit.bar, hit.bar->assignedBoxGlobal());
             int        from = 0;
-            for (size_t i = 0; i < deco->m_dwGroupMembers.size(); ++i)
-                if (deco->m_dwGroupMembers[i] == tab)
+            for (size_t i = 0; i < hit.bar->m_members.size(); ++i)
+                if (hit.bar->m_members[i] == tab)
                     from = i;
-            const auto target = tabBox(g, hit.index);
-            const double x    = hit.index > from ? target.x + target.w - 1 : target.x - 1;
+            const auto   target = tabBox(g, hit.index);
+            const double x      = hit.index > from ? target.x + target.w - 1 : target.x - 1;
             addRect(ctx, toPx(CBox{x, target.y, 2, target.h}), accent, Math::SCornerRadii{0.F}, false, pres);
         } else
             drawZone(ctx, mon, dropAt(pos, nullptr), current);
     }
 
     PHLWINDOW draggedWindow() {
-        return g_layoutManager->dragController()->mode() == MBIND_MOVE ? g_dragged.lock() : nullptr;
+        const auto& dc = g_layoutManager->dragController();
+        if (dc->mode() != MBIND_MOVE || !dc->draggingTiled() || !dc->target())
+            return nullptr;
+        return dc->target()->window();
     }
 
-    using DragBeginFn = void (*)(void*, SP<Layout::ITarget>, eMouseBindMode, std::optional<Layout::eRectCorner>, bool);
+    // Hyprland's drag ends after the layout changed, so the drop is the one seen at the last motion.
+    struct {
+        PHLWINDOWREF window;
+        SDrop        drop;
+    } g_pendingDrop;
 
-    void hkDragBegin(void* self, SP<Layout::ITarget> target, eMouseBindMode mode, std::optional<Layout::eRectCorner> edge, bool grab) {
-        const auto window = mode == MBIND_MOVE && target ? target->window() : nullptr;
-        g_dragged         = window && !window->isFloating() ? window : nullptr;
-        ((DragBeginFn)g_dragHook->m_original)(self, target, mode, edge, grab);
-    }
-
-    using DropFn = bool (*)(void*);
-
-    bool hkDragEnd(void* self) {
+    void trackDrop() {
         const auto window = draggedWindow();
-        const auto drop   = window && g_config.enabled->value() ? dropAt(g_pInputManager->getMouseCoordsInternal(), window) : SDrop{};
-        const bool result = ((DropFn)g_dropHook->m_original)(self);
-        if (drop.target && drop.zone != ZONE_NONE) {
+        if (!window || !g_config.enabled->value())
+            return;
+        g_pendingDrop = {window, dropAt(g_pInputManager->getMouseCoordsInternal(), window)};
+    }
+
+    void onDragEnded() {
+        const auto window = g_pendingDrop.window.lock();
+        const auto drop   = g_pendingDrop.drop;
+        g_pendingDrop     = {};
+        if (window && drop.target && drop.zone != ZONE_NONE) {
             const auto call = std::format("tabs_drop(\"{}\", \"{:x}\", \"{:x}\")", zoneName(drop.zone), rc<uintptr_t>(window.get()), rc<uintptr_t>(drop.target.get()));
             g_pEventLoopManager->doLater([call] { HyprlandAPI::invokeHyprctlCommand("eval", call); });
         }
         damageAll();
-        return result;
     }
 
     int luaDropZone(lua_State* L) {
@@ -651,8 +895,10 @@ namespace {
     void onMouseMove(const Vector2D& pos) {
         if (!g_config.enabled->value())
             return;
-        if (draggedWindow())
+        if (draggedWindow()) {
+            trackDrop();
             damageAll();
+        }
         if (g_drag.tab)
             onDragMove(pos);
         const auto [owner, hit] = barAt(pos);
@@ -674,15 +920,98 @@ namespace {
         return 1;
     }
 
-    // Hyprland moves the focus only when the group had it, so tabs.lua sees no window.active and cannot set no_anim:
-    // a scroll on the bar of another group faded the tabs. A tab switch is instant in both cases.
-    bool scrollTabs(CHyprGroupBarDecoration* self, InputFn original, const Vector2D& pos, std::any data) {
-        const auto owner = self->m_window.lock();
-        const auto group = owner ? owner->grouping().group() : nullptr;
-        if (!original(self, INPUT_TYPE_AXIS, pos, data))
+    std::pair<int, bool> slotAt(const SBarGeometry& g, const Vector2D& pos) {
+        const float rel   = pos.x - g.box.x;
+        const int   index = std::min<int>(rel / (g.tabWidth + g.gap), g.count - 1);
+        return {index, index + 1 < (int)g.count && rel - (g.tabWidth + g.gap) * index > g.tabWidth};
+    }
+
+    bool beginTabDrag(CTabBar* bar, const PHLWINDOW& owner, const Vector2D& pos) {
+        const auto group = owner->grouping().group();
+        if (group->size() == 1)
             return false;
-        if (!group)
+        const auto [index, onGap] = slotAt(geometry(bar, bar->assignedBoxGlobal()), pos);
+        if (onGap)
+            return false;
+        const auto window = group->fromIndex(index);
+        if (!window)
+            return false;
+        group->remove(window);
+        g_layoutManager->dragController()->dragBegin(window->layoutTarget(), MBIND_MOVE);
+        if (!Desktop::focusState()->isWindowActive(window))
+            Desktop::focusState()->rawWindowFocus(window, Desktop::FOCUS_REASON_CLICK);
+        return true;
+    }
+
+    bool dropOnBar(CTabBar* bar, const PHLWINDOW& owner, const Vector2D& pos, const PHLWINDOW& dragged) {
+        static auto PDRAGINTOGROUP                   = CConfigValue<Config::INTEGER>("group:drag_into_group");
+        static auto PMERGEFLOATEDINTOTILEDONGROUPBAR = CConfigValue<Config::BOOL>("group:merge_floated_into_tiled_on_groupbar");
+        static auto PMERGEGROUPSONGROUPBAR           = CConfigValue<Config::BOOL>("group:merge_groups_on_groupbar");
+        const auto  group                            = owner->grouping().group();
+        const bool  floatedIntoTiled                 = !owner->isFloating() && !g_layoutManager->dragController()->draggingTiled();
+
+        if (!dragged || !dragged->grouping().canBeGroupedInto(group) || (*PDRAGINTOGROUP != 1 && *PDRAGINTOGROUP != 2) ||
+            (floatedIntoTiled && !*PMERGEFLOATEDINTOTILEDONGROUPBAR) || (!*PMERGEGROUPSONGROUPBAR && dragged->grouping().group()))
+            return false;
+
+        const auto  g     = geometry(bar, bar->assignedBoxGlobal());
+        const float rel   = std::min<double>(pos.x, tabsEnd(g, bar->m_members.size()) - 1) - g.box.x - g.tabWidth / 2;
+        const int   index = (rel < 0 ? -1 : rel / (g.tabWidth + g.gap)) + 1;
+        group->add(dragged, index);
+        Desktop::focusState()->fullWindowFocus(dragged->windowTarget()->window(), Desktop::FOCUS_REASON_DESKTOP_STATE_CHANGE);
+        return true;
+    }
+
+    bool clickTab(CTabBar* bar, const PHLWINDOW& owner, const Vector2D& pos, const IPointer::SButtonEvent& e) {
+        static auto PMIDDLECLICKCLOSE = CConfigValue<Config::BOOL>("group:groupbar:middle_click_close");
+        static auto PFOLLOWMOUSE      = CConfigValue<Config::INTEGER>("input:follow_mouse");
+        if (Fullscreen::controller()->getFullscreenModes(owner).internal == Fullscreen::FSMODE_FULLSCREEN)
             return true;
+
+        const auto [index, onGap] = slotAt(geometry(bar, bar->assignedBoxGlobal()), pos);
+        const auto group          = owner->grouping().group();
+
+        if (e.button == BTN_MIDDLE) {
+            if (!*PMIDDLECLICKCLOSE)
+                return true;
+            static Vector2D pressedAt;
+            if (e.state == WL_POINTER_BUTTON_STATE_PRESSED)
+                pressedAt = pos;
+            else if (pressedAt == pos)
+                if (const auto w = group->fromIndex(index))
+                    w->sendClose();
+            return true;
+        }
+
+        if (e.state != WL_POINTER_BUTTON_STATE_PRESSED)
+            return true;
+
+        if (onGap) {
+            if (!Desktop::focusState()->isWindowActive(owner))
+                Desktop::focusState()->rawWindowFocus(owner, Desktop::FOCUS_REASON_CLICK_DOWN);
+            return true;
+        }
+
+        const auto window = group->fromIndex(index);
+        if (!window)
+            return true;
+        if (window != owner)
+            group->setCurrent(window);
+        if (!Desktop::focusState()->isWindowActive(window) && *PFOLLOWMOUSE != 3)
+            Desktop::focusState()->rawWindowFocus(window, Desktop::FOCUS_REASON_CLICK_DOWN);
+        if (window->isFloating())
+            Desktop::windowState()->raise(window);
+        return true;
+    }
+
+    // A tab switch is instant: Hyprland moves the focus only when the group had it, so tabs.lua sees no window.active
+    // and cannot set no_anim, and a scroll on the bar of another group faded the tabs.
+    bool scrollTabs(const PHLWINDOW& owner, const IPointer::SAxisEvent& e) {
+        static auto PSCROLLING = CConfigValue<Config::BOOL>("group:groupbar:scrolling");
+        const auto  group      = owner->grouping().group();
+        if (!*PSCROLLING || !group)
+            return false;
+        group->moveCurrent(e.delta > 0);
         for (const auto& ref : group->windows()) {
             const auto w = ref.lock();
             if (!w)
@@ -694,63 +1023,310 @@ namespace {
         return true;
     }
 
-    bool hkInput(CHyprGroupBarDecoration* self, const eInputType type, const Vector2D& pos, std::any data) {
-        const auto original = (InputFn)g_inputHook->m_original;
-        if (g_config.enabled->value() && type == INPUT_TYPE_AXIS)
-            return scrollTabs(self, original, pos, data);
-        if (!g_config.enabled->value() || (type != INPUT_TYPE_BUTTON && type != INPUT_TYPE_DRAG_START && type != INPUT_TYPE_DRAG_END))
-            return original(self, type, pos, data);
+    bool CTabBar::onInputOnDeco(const eInputType type, const Vector2D& pos, std::any data) {
+        const auto owner = m_owner.lock();
+        if (!owner || !owner->grouping().group() || !visible())
+            return false;
 
-        if (type == INPUT_TYPE_DRAG_END || type == INPUT_TYPE_BUTTON || type == INPUT_TYPE_DRAG_START) {
-            const auto g   = geometry(self, self->assignedBoxGlobal());
-            const auto end = tabsEnd(g, self->m_dwGroupMembers.size());
-            if (pos.x > end) {
-                if (type == INPUT_TYPE_DRAG_END)
-                    return original(self, type, Vector2D{end - 1, pos.y}, data);
-                if (type == INPUT_TYPE_DRAG_START)
-                    return false;
-                const auto owner = self->m_window.lock();
-                if (owner && !Desktop::focusState()->isWindowActive(owner))
-                    Desktop::focusState()->rawWindowFocus(owner, Desktop::FOCUS_REASON_CLICK);
-                return true;
-            }
+        if (type == INPUT_TYPE_AXIS)
+            return scrollTabs(owner, std::any_cast<const IPointer::SAxisEvent>(data));
+        if (type == INPUT_TYPE_DRAG_END)
+            return dropOnBar(this, owner, pos, std::any_cast<PHLWINDOW>(data));
+
+        const auto pastTabs = pos.x > tabsEnd(geometry(this, assignedBoxGlobal()), m_members.size());
+        const auto hit      = hitTest(this, pos);
+
+        if (type == INPUT_TYPE_DRAG_START) {
+            if (pastTabs)
+                return false;
+            return hit.onClose ? true : beginTabDrag(this, owner, pos);
+        }
+        if (type != INPUT_TYPE_BUTTON)
+            return false;
+
+        if (pastTabs) {
+            if (!Desktop::focusState()->isWindowActive(owner))
+                Desktop::focusState()->rawWindowFocus(owner, Desktop::FOCUS_REASON_CLICK);
+            return true;
         }
 
-        const auto hit = hitTest(self, pos);
-        if (type == INPUT_TYPE_DRAG_START)
-            return hit.onClose ? true : original(self, type, pos, data);
-        if (type == INPUT_TYPE_DRAG_END)
-            return original(self, type, pos, data);
-
         const auto e = std::any_cast<const IPointer::SButtonEvent&>(data);
-        if (e.button == BTN_RIGHT && hit.deco) {
-            const auto tab = self->m_window->grouping().group()->fromIndex(hit.index);
+        if (e.button == BTN_RIGHT && hit.bar) {
+            const auto tab = owner->grouping().group()->fromIndex(hit.index);
             if (tab && e.state == WL_POINTER_BUTTON_STATE_PRESSED)
                 IPC::Socket2::sock()->postEvent({"tabbar-menu",
-                                                 std::format("{:x},{},{},{},{}", rc<uintptr_t>(tab.get()), hit.index + 1, self->m_dwGroupMembers.size(),
-                                                             (int)std::round(pos.x), (int)std::round(pos.y))});
+                                                 std::format("{:x},{},{},{},{}", rc<uintptr_t>(tab.get()), hit.index + 1, m_members.size(), (int)std::round(pos.x),
+                                                             (int)std::round(pos.y))});
             return true;
         }
         if (e.button != BTN_LEFT)
-            return original(self, type, pos, data);
+            return clickTab(this, owner, pos, e);
 
         if (e.state == WL_POINTER_BUTTON_STATE_PRESSED) {
             if (!hit.onClose) {
                 g_pressedClose.reset();
-                return original(self, type, pos, data);
+                return clickTab(this, owner, pos, e);
             }
-            g_pressedClose = self->m_window->grouping().group()->fromIndex(hit.index);
+            g_pressedClose = owner->grouping().group()->fromIndex(hit.index);
             return true;
         }
 
         if (g_pressedClose) {
             const auto target = g_pressedClose.lock();
             g_pressedClose.reset();
-            if (hit.onClose && target && target == self->m_window->grouping().group()->fromIndex(hit.index))
+            if (hit.onClose && target && target == owner->grouping().group()->fromIndex(hit.index))
                 target->sendClose();
             return true;
         }
-        return original(self, type, pos, data);
+        return clickTab(this, owner, pos, e);
+    }
+
+    CHyprBorderDecoration* CTabBorder::hyprlandBorder() const {
+        const auto w = m_owner.lock();
+        return w ? dc<CHyprBorderDecoration*>(w->presentation().decoration(DECORATION_BORDER).get()) : nullptr;
+    }
+
+    // Hyprland's border of a window with a bar is transparent; this one has the same size and colours, but round
+    // top corners around the bar.
+    void CTabBorder::draw(CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
+        const auto w      = m_owner.lock();
+        const auto border = hyprlandBorder();
+        if (!w || !border || !hasBar(w))
+            return;
+        const auto size = border->renderBorderSize();
+        if (size == 0)
+            return;
+
+        CBox box = g_pDecorationPositioner->getWindowDecorationBox(border)
+                       .translate(pres.workspaceOffset - mon->m_position + pres.floatingOffset)
+                       .expand(-border->borderExtent())
+                       .scale(mon->m_scale)
+                       .round();
+        if (box.width < 1 || box.height < 1)
+            return;
+
+        const auto gradient   = m_gradient.renderState();
+        const auto base       = globalRounding();
+        const auto power      = w->presentation().roundingPower();
+        const auto correction = size * (M_SQRT2 - 1) * std::max(2.0 - power, 0.0);
+
+        CBorderPassElement::SBorderData data;
+        data.box           = box;
+        data.grad1         = gradient.current;
+        data.round         = base * mon->m_scale;
+        data.outerRound    = base.expanded(size - correction) * mon->m_scale;
+        data.roundingPower = power;
+        data.a             = a;
+        data.borderSize    = size;
+        data.window        = w;
+        if (gradient.transitioning) {
+            data.hasGrad2 = true;
+            data.grad1    = gradient.previous;
+            data.grad2    = gradient.current;
+            data.lerp     = gradient.progress;
+        }
+        g_pHyprRenderer->addPassElement(ctx, makeUnique<CBorderPassElement>(data));
+    }
+
+    void CTabBorder::damageEntire() {
+        const auto w      = m_owner.lock();
+        const auto border = hyprlandBorder();
+        if (!validMapped(w) || !border || !hasBar(w) || Fullscreen::controller()->isPresentedFullscreen(w, Fullscreen::FSMODE_FULLSCREEN))
+            return;
+
+        const auto box = g_pDecorationPositioner->getWindowDecorationBox(border).translate(w->presentation().renderPresentation().workspaceOffset +
+                                                                                           w->presentation().floatingOffset());
+        if (box.w <= 0 || box.h <= 0)
+            return;
+        const auto ring = border->borderExtent() + 1 + globalRounding().max();
+        CRegion    region(box);
+        region.subtract(box.copy().expand(-ring));
+        region.expand(2);
+        g_pHyprRenderer->damageRegion(region);
+    }
+
+    void CTabBorder::updateState() {
+        static auto PGROUPACTIVECOL         = CConfigValue<Config::IComplexConfigValue>("group:col.border_active");
+        static auto PGROUPINACTIVECOL       = CConfigValue<Config::IComplexConfigValue>("group:col.border_inactive");
+        static auto PGROUPACTIVELOCKEDCOL   = CConfigValue<Config::IComplexConfigValue>("group:col.border_locked_active");
+        static auto PGROUPINACTIVELOCKEDCOL = CConfigValue<Config::IComplexConfigValue>("group:col.border_locked_inactive");
+
+        const auto  w = m_owner.lock();
+        if (!w)
+            return;
+
+        const auto group  = w->grouping().group();
+        const bool locked = (group && group->locked()) || Desktop::windowState()->groupsLocked();
+        if (w == Desktop::focusState()->window()) {
+            const auto* col = sc<Config::CGradientValueData*>((locked ? PGROUPACTIVELOCKEDCOL : PGROUPACTIVECOL).ptr());
+            m_gradient.setTarget(withoutOwnProp(w->m_ruleApplicator->activeBorderColor()).valueOr(*col));
+        } else {
+            const auto* col = sc<Config::CGradientValueData*>((locked ? PGROUPINACTIVELOCKEDCOL : PGROUPINACTIVECOL).ptr());
+            m_gradient.setTarget(withoutOwnProp(w->m_ruleApplicator->inactiveBorderColor()).valueOr(*col));
+        }
+    }
+
+    SDecorationPositioningInfo CTabShadow::getPositioningInfo() {
+        SDecorationPositioningInfo info;
+        info.policy         = DECORATION_POSITION_ABSOLUTE;
+        info.desiredExtents = m_extents;
+        info.edges          = DECORATION_EDGE_BOTTOM | DECORATION_EDGE_LEFT | DECORATION_EDGE_RIGHT | DECORATION_EDGE_TOP;
+        m_reportedExtents   = m_extents;
+        return info;
+    }
+
+    void CTabShadow::updateWindow(PHLWINDOW) {
+        const auto w = m_owner.lock();
+        if (!w)
+            return;
+        m_lastPos          = w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+        m_lastSize         = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+        m_lastBoxWithDecos = g_pDecorationPositioner->getBoxWithIncludedDecos(w);
+    }
+
+    void CTabShadow::updateState() {
+        static auto PSHADOWCOL         = CConfigValue<Config::IComplexConfigValue>("decoration:shadow:color");
+        static auto PSHADOWCOLINACTIVE = CConfigValue<Config::IComplexConfigValue>("decoration:shadow:color_inactive");
+
+        const auto  w = m_owner.lock();
+        if (!w)
+            return;
+        const auto traits = w->backend().traits();
+        if (traits.overrideRedirect || traits.suggestsNoBorder) {
+            m_gradient.setTarget(Config::CGradientValueData{CHyprColor(0, 0, 0, 0)}, false);
+            return;
+        }
+        auto* const active   = sc<Config::CGradientValueData*>(PSHADOWCOL.ptr());
+        auto* const inactive = sc<Config::CGradientValueData*>(PSHADOWCOLINACTIVE.ptr());
+        if (w == Desktop::focusState()->window())
+            m_gradient.setTarget(*active);
+        else
+            m_gradient.setTarget(PSHADOWCOLINACTIVE.setByUser() ? *inactive : *active);
+    }
+
+    bool CTabShadow::canRender() const {
+        static auto PSHADOWS = CConfigValue<Config::BOOL>("decoration:shadow:enabled");
+        const auto  w        = m_owner.lock();
+        if (!*PSHADOWS || !g_config.enabled->value() || !validMapped(w))
+            return false;
+
+        const auto hasAlpha = [](const Config::CGradientValueData& g) { return std::ranges::any_of(g.m_colors, [](const auto& c) { return c.a > 0.001F; }); };
+        const auto gradient = m_gradient.renderState();
+        if (!hasAlpha(gradient.current) && !(gradient.transitioning && hasAlpha(gradient.previous)))
+            return false;
+
+        return w->m_ruleApplicator->decorate().valueOrDefault() && !withoutOwnProp(w->m_ruleApplicator->noShadow()).valueOr(false);
+    }
+
+    void CTabShadow::draw(CRenderContext& ctx, PHLMONITOR, float const& a, const SWindowRenderPresentation& pres) {
+        const auto self = dynamicPointerCast<CTabShadow>(this->self());
+        if (self)
+            g_pHyprRenderer->addPassElement(ctx, makeUnique<CTabShadowPass>(self, a, pres));
+    }
+
+    // Hyprland's shadow, with the outline of a window with a bar (round on all four corners) and a smaller, lighter
+    // shadow on tiled windows: they lie closer to the wallpaper than floating ones.
+    void CTabShadow::render(CRenderContext& ctx, PHLMONITOR mon, float a, const SWindowRenderPresentation& pres) {
+        static auto PRANGE  = CConfigValue<Config::INTEGER>("decoration:shadow:range");
+        static auto PSCALE  = CConfigValue<Config::FLOAT>("decoration:shadow:scale");
+        static auto POFFSET = CConfigValue<Config::VEC2>("decoration:shadow:offset");
+        static auto PSHARP  = CConfigValue<Config::BOOL>("decoration:shadow:sharp");
+
+        const auto  w = m_owner.lock();
+        if (!mon || !w || !canRender())
+            return;
+
+        const bool  tiled  = !w->isFloating();
+        const float factor = tiled ? std::clamp(g_config.tiledShadow->value(), 0.F, 1.F) : 1.F;
+        if (tiled)
+            a *= std::clamp(g_config.tiledShadowAlpha->value(), 0.F, 1.F);
+
+        const auto border     = w->presentation().borderSize();
+        const auto base       = hasBar(w) ? globalRounding() : Math::SCornerRadii{w->presentation().rounding()};
+        const auto power      = w->presentation().roundingPower();
+        const auto correction = border * (M_SQRT2 - 1) * std::max(2.0 - power, 0.0);
+        const auto rounding   = base.expanded(border - correction);
+
+        CBox fullBox = m_lastBoxWithDecos;
+        fullBox.translate(-mon->m_position + pres.workspaceOffset);
+        fullBox.x -= *PRANGE;
+        fullBox.y -= *PRANGE;
+        fullBox.w += 2 * *PRANGE;
+        fullBox.h += 2 * *PRANGE;
+        fullBox.scaleFromCenter(std::clamp(*PSCALE, 0.F, 1.F)).translate({(*POFFSET).x, (*POFFSET).y});
+
+        updateWindow(w);
+        m_lastPos += pres.workspaceOffset;
+        m_extents = {
+            .topLeft     = {m_lastPos.x - fullBox.x - mon->m_position.x + 2, m_lastPos.y - fullBox.y - mon->m_position.y + 2},
+            .bottomRight = {fullBox.x + fullBox.width + mon->m_position.x - m_lastPos.x - m_lastSize.x + 2,
+                            fullBox.y + fullBox.height + mon->m_position.y - m_lastPos.y - m_lastSize.y + 2},
+        };
+
+        fullBox.translate(pres.floatingOffset);
+        if (fullBox.width < 1 || fullBox.height < 1)
+            return;
+        fullBox.scale(mon->m_scale).round();
+
+        int range = *PRANGE;
+        if (factor < 1.F) {
+            const double   shrink = (1.0 - factor) * mon->m_scale;
+            const double   inset  = *PRANGE * std::clamp(*PSCALE, 0.F, 1.F) * shrink;
+            const Vector2D center = fullBox.middle() - Vector2D{(*POFFSET).x, (*POFFSET).y} * shrink;
+            const Vector2D size   = fullBox.size() - Vector2D{inset, inset} * 2;
+            if (size.x >= 1 && size.y >= 1) {
+                fullBox = CBox{center - size / 2, size}.round();
+                range   = std::max(1, (int)std::round(range * factor));
+            }
+        }
+
+        ctx.m_data.currentWindow = w;
+        g_pHyprRenderer->disableScissor();
+        g_pHyprRenderer->blend(true);
+
+        const auto gradient = m_gradient.renderState();
+        const auto round    = rounding * mon->m_scale;
+        if (*PSHARP) {
+            const auto& from = gradient.transitioning ? gradient.previous : gradient.current;
+            CHyprColor  flat = from.m_colors.empty() ? CHyprColor(0, 0, 0, 0) : from.m_colors[0];
+            if (gradient.transitioning && !gradient.current.m_colors.empty()) {
+                const auto to = gradient.current.m_colors[0];
+                const auto t  = gradient.progress;
+                flat          = CHyprColor(flat.r + (to.r - flat.r) * t, flat.g + (to.g - flat.g) * t, flat.b + (to.b - flat.b) * t, flat.a + (to.a - flat.a) * t);
+            }
+            flat.a *= a;
+            g_pHyprRenderer->draw(ctx, CRectPassElement::SRectData{.box = fullBox, .color = flat, .round = round, .roundingPower = power}, fullBox);
+        } else if (gradient.transitioning)
+            g_pHyprRenderer->drawShadow(ctx, fullBox, round, power, range * mon->m_scale, gradient.previous, gradient.current, gradient.progress, a, pres);
+        else
+            g_pHyprRenderer->drawShadow(ctx, fullBox, round, power, range * mon->m_scale, gradient.current, a, pres);
+
+        if (m_extents != m_reportedExtents)
+            g_pDecorationPositioner->repositionDeco(this);
+        ctx.m_data.currentWindow.reset();
+    }
+
+    void CTabShadow::damageEntire() {
+        static auto PSHADOWS = CConfigValue<Config::BOOL>("decoration:shadow:enabled");
+        const auto  w        = m_owner.lock();
+        if (!*PSHADOWS || !w)
+            return;
+
+        const auto pos  = w->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+        const auto size = w->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT);
+        CBox       box  = {pos.x - m_extents.topLeft.x, pos.y - m_extents.topLeft.y, size.x + m_extents.topLeft.x + m_extents.bottomRight.x,
+                           size.y + m_extents.topLeft.y + m_extents.bottomRight.y};
+
+        const auto workspace = w->presentation().workspace();
+        if (workspace && workspace->m_renderOffset->isBeingAnimated() && !(w->m_state & Desktop::View::WINDOW_STATE_PINNED))
+            box.translate(workspace->m_renderOffset->value());
+        box.translate(w->presentation().floatingOffset());
+
+        CRegion region(box);
+        for (const auto& m : State::monitorState()->monitors())
+            if (!g_pHyprRenderer->shouldRenderWindow(w, m))
+                region.subtract(CRegion({m->m_position, m->m_size}));
+        g_pHyprRenderer->damageRegion(region);
     }
 
     std::string squareTop() {
@@ -758,105 +1334,65 @@ namespace {
         return std::format("0 0 {} {}", (int)r.bottomRight, (int)r.bottomLeft);
     }
 
-    void syncCorners() {
+    // Hyprland's own shadow goes off on every window (the plugin draws it); a window with a bar also gets a
+    // transparent Hyprland border (the plugin draws it) and square top corners under the bar.
+    void apply(const PHLWINDOW& w, bool shadow, const std::string& rounding) {
+        auto&      rules  = *w->m_ruleApplicator;
+        const bool border = !rounding.empty();
+        const Config::CGradientValueData none{CHyprColor(sc<uint64_t>(0))};
+
+        if (shadow)
+            rules.noShadow().set(true, PRIORITY_SET_PROP);
+        else
+            rules.noShadow().unset(PRIORITY_SET_PROP);
+
+        if (border) {
+            rules.activeBorderColor().set(none, PRIORITY_SET_PROP);
+            rules.inactiveBorderColor().set(none, PRIORITY_SET_PROP);
+        } else {
+            rules.activeBorderColor().unset(PRIORITY_SET_PROP);
+            rules.inactiveBorderColor().unset(PRIORITY_SET_PROP);
+        }
+
+        (void)Config::Actions::setProp("rounding", border ? rounding : "unset", w);
+    }
+
+    void syncWindows() {
         const bool enabled = g_config.enabled->value();
         const auto value   = squareTop();
 
-        for (auto it = g_rounded.begin(); it != g_rounded.end();) {
-            if (!it->second.first)
-                it = g_rounded.erase(it);
+        for (auto it = g_applied.begin(); it != g_applied.end();) {
+            if (!it->second.window)
+                it = g_applied.erase(it);
             else
                 ++it;
         }
 
         for (const auto& w : Desktop::windowState()->windows()) {
-            const auto deco = w->presentation().decoration(DECORATION_GROUPBAR);
-            const bool want = enabled && w->mapped() && deco && sc<CHyprGroupBarDecoration*>(deco.get())->visible();
-            const auto it   = g_rounded.find(w.get());
+            if (!w->mapped())
+                continue;
+            attach(w);
+            const bool shadow   = enabled;
+            const auto rounding = enabled && hasBar(w) ? value : std::string{};
+            const auto it       = g_applied.find(w.get());
+            const bool known    = it != g_applied.end();
 
-            if (want && (it == g_rounded.end() || it->second.second != value)) {
-                (void)Config::Actions::setProp("rounding", value, w);
-                g_rounded[w.get()] = {w, value};
-            } else if (!want && it != g_rounded.end()) {
-                (void)Config::Actions::setProp("rounding", "unset", w);
-                g_rounded.erase(it);
-            }
+            if (known && it->second.shadow == shadow && it->second.rounding == rounding)
+                continue;
+            if (!known && !shadow && rounding.empty())
+                continue;
+
+            apply(w, shadow, rounding);
+            if (!shadow && rounding.empty())
+                g_applied.erase(w.get());
+            else
+                g_applied[w.get()] = {w, shadow, rounding};
         }
-    }
-
-    SDecorationPositioningInfo hkPosInfo(CHyprGroupBarDecoration* self) {
-        auto info = ((PosFn)g_posHook->m_original)(self);
-        if (g_config.enabled->value())
-            info.priority = 10005;
-        return info;
-    }
-
-    template <typename T>
-    void outlineDraw(CFunctionHook* hook, T* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
-        const auto w = self->m_window.lock();
-        g_outline    = w && g_rounded.contains(w.get()) ? w.get() : nullptr;
-        ((DecoFn)hook->m_original)(self, ctx, mon, a, pres);
-        g_outline = nullptr;
-    }
-
-    void hkBorderDraw(CHyprBorderDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
-        outlineDraw(g_borderHook, self, ctx, mon, a, pres);
-    }
-
-    // Hyprland draws shadows in the render pass, after draw(); the size and the corners are computed there.
-    void hkShadowRender(CHyprDropShadowDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
-        const auto window = self->m_window.lock();
-        const bool tiled  = window && !window->isFloating() && g_config.enabled->value();
-        const float alpha = tiled ? a * std::clamp(g_config.tiledShadowAlpha->value(), 0.F, 1.F) : a;
-        outlineDraw(g_shadowHook, self, ctx, mon, alpha, pres);
-    }
-
-    using FlagsFn = uint64_t (*)(CHyprGroupBarDecoration*);
-    CFunctionHook* g_flagsHook = nullptr;
-
-    // Part of the window: the shadow goes around the bar too (without a border nothing else includes it).
-    uint64_t hkBarFlags(CHyprGroupBarDecoration* self) {
-        const auto flags = ((FlagsFn)g_flagsHook->m_original)(self);
-        return g_config.enabled->value() ? flags | DECORATION_PART_OF_MAIN_WINDOW : flags;
-    }
-
-    using ShadowDataFn = SShadowRenderData (*)(CHyprDropShadowDecoration*, CRenderContext&, PHLMONITOR, float const&, const SWindowRenderPresentation&);
-
-    // A tiled window lies closer to the wallpaper than a floating one: the same shadow with its range and offset scaled down.
-    SShadowRenderData hkShadowData(CHyprDropShadowDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
-        static auto PRANGE  = CConfigValue<Config::INTEGER>("decoration:shadow:range");
-        static auto PSCALE  = CConfigValue<Config::FLOAT>("decoration:shadow:scale");
-        static auto POFFSET = CConfigValue<Config::VEC2>("decoration:shadow:offset");
-
-        auto        data   = ((ShadowDataFn)g_shadowDataHook->m_original)(self, ctx, mon, a, pres);
-        const auto  window = self->m_window.lock();
-        const float factor = std::clamp(g_config.tiledShadow->value(), 0.F, 1.F);
-        if (!data.valid || !window || window->isFloating() || factor >= 1.F || !g_config.enabled->value())
-            return data;
-
-        const double   shrink = (1.0 - factor) * mon->m_scale;
-        const double   inset  = *PRANGE * std::clamp(*PSCALE, 0.F, 1.F) * shrink;
-        const Vector2D center = data.fullBox.middle() - Vector2D{(*POFFSET).x, (*POFFSET).y} * shrink;
-        const Vector2D size   = data.fullBox.size() - Vector2D{inset, inset} * 2;
-        if (size.x < 1 || size.y < 1)
-            return data;
-        data.fullBox = CBox{center - size / 2, size}.round();
-        data.size    = std::max(1, (int)std::round(data.size * factor));
-        return data;
-    }
-
-    Math::SCornerRadii hkRounding(Desktop::View::CWindowPresentation* self) {
-        auto r = ((RoundFn)g_roundHook->m_original)(self);
-        if (g_outline && &g_outline->presentation() == self) {
-            const auto global = globalRounding();
-            r.topLeft         = global.topLeft;
-            r.topRight        = global.topRight;
-        }
-        return r;
     }
 
     void forgetWindow(Desktop::View::CWindow* w) {
-        g_rounded.erase(w);
+        g_applied.erase(w);
+        g_decorations.erase(w);
         for (auto it = g_text.begin(); it != g_text.end();) {
             if (it->first.starts_with(std::format("{:x}/", rc<uintptr_t>(w))))
                 it = g_text.erase(it);
@@ -872,13 +1408,7 @@ namespace {
             damageOwner(cur);
     }
 
-    void* findMember(const std::string& name, const std::string& demangledPrefix) {
-        for (const auto& m : HyprlandAPI::findFunctionsByName(PHANDLE, name)) {
-            if (m.demangled.starts_with(demangledPrefix))
-                return m.address;
-        }
-        return nullptr;
-    }
+    CHyprSignalListener g_dragMotion, g_dragEnded;
 }
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
@@ -894,53 +1424,33 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     }
 
     using namespace Config::Values;
-    g_config.enabled      = makeShared<CBoolValue>("plugin:tabbar:enabled", "Draw the group tab bars", true);
-    g_config.strip        = makeShared<CColorValue>("plugin:tabbar:col.strip", "Bar behind the tabs", 0xa6292522);
-    g_config.focused      = makeShared<CColorValue>("plugin:tabbar:col.focused", "Current tab of the focused group", 0x29ece1d7);
-    g_config.current      = makeShared<CColorValue>("plugin:tabbar:col.current", "Current tab of another group", 0x12ece1d7);
-    g_config.inactive     = makeShared<CColorValue>("plugin:tabbar:col.inactive", "Other tabs", 0x00000000);
-    g_config.hover        = makeShared<CColorValue>("plugin:tabbar:col.hover", "Tab under the pointer", 0x1fffffff);
-    g_config.urgent       = makeShared<CColorValue>("plugin:tabbar:col.urgent", "Tint of a tab that asks for attention", 0x40d47766);
-    g_config.accent       = makeShared<CColorValue>("plugin:tabbar:col.accent", "Line under the current tab of the focused group", 0xffe49b5d);
-    g_config.close        = makeShared<CColorValue>("plugin:tabbar:col.close", "Close button", 0xffece1d7);
-    g_config.closeHover   = makeShared<CColorValue>("plugin:tabbar:col.close_hover", "Behind the close button under the pointer", 0x29ece1d7);
-    g_config.accentHeight = makeShared<CIntValue>("plugin:tabbar:accent_height", "Height of the accent line, 0 = none", 2);
-    g_config.iconSize     = makeShared<CIntValue>("plugin:tabbar:icon_size", "App icon size", 16);
-    g_config.padding      = makeShared<CIntValue>("plugin:tabbar:padding", "Space left of the icon", 10);
-    g_config.compactWidth = makeShared<CIntValue>("plugin:tabbar:compact_width", "Below this tab width only the icon shows", 90);
-    g_config.maxWidth     = makeShared<CIntValue>("plugin:tabbar:max_width", "Largest tab width", 240);
-    g_config.tiledShadow  = makeShared<CFloatValue>("plugin:tabbar:tiled_shadow", "Shadow of tiled windows relative to floating ones (range and offset), 1 = the same", 0.35);
+    g_config.enabled          = makeShared<CBoolValue>("plugin:tabbar:enabled", "Draw the group tab bars", true);
+    g_config.strip            = makeShared<CColorValue>("plugin:tabbar:col.strip", "Bar behind the tabs", 0xa6292522);
+    g_config.focused          = makeShared<CColorValue>("plugin:tabbar:col.focused", "Current tab of the focused group", 0x29ece1d7);
+    g_config.current          = makeShared<CColorValue>("plugin:tabbar:col.current", "Current tab of another group", 0x12ece1d7);
+    g_config.inactive         = makeShared<CColorValue>("plugin:tabbar:col.inactive", "Other tabs", 0x00000000);
+    g_config.hover            = makeShared<CColorValue>("plugin:tabbar:col.hover", "Tab under the pointer", 0x1fffffff);
+    g_config.urgent           = makeShared<CColorValue>("plugin:tabbar:col.urgent", "Tint of a tab that asks for attention", 0x40d47766);
+    g_config.accent           = makeShared<CColorValue>("plugin:tabbar:col.accent", "Line under the current tab of the focused group", 0xffe49b5d);
+    g_config.close            = makeShared<CColorValue>("plugin:tabbar:col.close", "Close button", 0xffece1d7);
+    g_config.closeHover       = makeShared<CColorValue>("plugin:tabbar:col.close_hover", "Behind the close button under the pointer", 0x29ece1d7);
+    g_config.accentHeight     = makeShared<CIntValue>("plugin:tabbar:accent_height", "Height of the accent line, 0 = none", 2);
+    g_config.iconSize         = makeShared<CIntValue>("plugin:tabbar:icon_size", "App icon size", 16);
+    g_config.padding          = makeShared<CIntValue>("plugin:tabbar:padding", "Space left of the icon", 10);
+    g_config.compactWidth     = makeShared<CIntValue>("plugin:tabbar:compact_width", "Below this tab width only the icon shows", 90);
+    g_config.maxWidth         = makeShared<CIntValue>("plugin:tabbar:max_width", "Largest tab width", 240);
+    g_config.tiledShadow      = makeShared<CFloatValue>("plugin:tabbar:tiled_shadow", "Shadow of tiled windows relative to floating ones (range and offset), 1 = the same", 0.35);
     g_config.tiledShadowAlpha = makeShared<CFloatValue>("plugin:tabbar:tiled_shadow_alpha", "Opacity of the shadow of tiled windows relative to floating ones", 0.7);
-    g_config.iconTheme    = makeShared<CStringValue>("plugin:tabbar:icon_theme", "Icon theme, hicolor is the fallback", "Adwaita");
+    g_config.iconTheme        = makeShared<CStringValue>("plugin:tabbar:icon_theme", "Icon theme, hicolor is the fallback", "Adwaita");
 
     for (const auto& v : std::initializer_list<SP<IValue>>{g_config.enabled, g_config.strip, g_config.focused, g_config.current, g_config.inactive, g_config.hover, g_config.urgent,
                                                            g_config.accent, g_config.close, g_config.closeHover, g_config.accentHeight, g_config.iconSize, g_config.padding,
                                                            g_config.compactWidth, g_config.maxWidth, g_config.iconTheme, g_config.tiledShadow, g_config.tiledShadowAlpha})
         HyprlandAPI::addConfigValueV2(PHANDLE, v);
 
-    const std::vector<std::tuple<CFunctionHook**, const char*, const char*, void*>> hooks = {
-        {&g_drawHook, "draw", "CHyprGroupBarDecoration::draw(", (void*)&hkDraw},
-        {&g_inputHook, "onInputOnDeco", "CHyprGroupBarDecoration::onInputOnDeco(", (void*)&hkInput},
-        {&g_posHook, "getPositioningInfo", "CHyprGroupBarDecoration::getPositioningInfo(", (void*)&hkPosInfo},
-        {&g_borderHook, "draw", "CHyprBorderDecoration::draw(", (void*)&hkBorderDraw},
-        {&g_shadowHook, "render", "CHyprDropShadowDecoration::render(", (void*)&hkShadowRender},
-        {&g_flagsHook, "getDecorationFlags", "CHyprGroupBarDecoration::getDecorationFlags(", (void*)&hkBarFlags},
-        {&g_roundHook, "rounding", "Desktop::View::CWindowPresentation::rounding(", (void*)&hkRounding},
-        {&g_dropHook, "dragEnd", "Layout::Supplementary::CDragStateController::dragEnd(", (void*)&hkDragEnd},
-        {&g_shadowDataHook, "getRenderData", "CHyprDropShadowDecoration::getRenderData(", (void*)&hkShadowData},
-        {&g_dragHook, "dragBegin", "Layout::Supplementary::CDragStateController::dragBegin(", (void*)&hkDragBegin},
-    };
-    for (const auto& [slot, name, prefix, target] : hooks) {
-        const auto addr = findMember(name, prefix);
-        if (!addr)
-            throw std::runtime_error(std::format("[tabbar] {} not found", prefix));
-        *slot = HyprlandAPI::createFunctionHook(PHANDLE, addr, target);
-        if (!*slot || !(*slot)->hook())
-            throw std::runtime_error(std::format("[tabbar] cannot hook {}", prefix));
-    }
-
+    static auto P0 = Event::bus()->m_events.window.open.listen([](PHLWINDOW w) { attach(w); });
     static auto P1 = Event::bus()->m_events.input.mouse.move.listen([](Vector2D pos, Event::SCallbackInfo&) { onMouseMove(pos); });
-    static auto P2 = Event::bus()->m_events.render.pre.listen([](PHLMONITOR) { syncCorners(); });
+    static auto P2 = Event::bus()->m_events.render.pre.listen([](PHLMONITOR) { syncWindows(); });
     static auto P7 = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent e, Event::SCallbackInfo&) { onButton(e); });
     static auto P8 = Event::bus()->m_events.render.stage.listen([](Event::SRenderStageEvent e) {
         if (e.stage != RENDER_POST_WINDOWS || !e.context)
@@ -959,27 +1469,35 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         g_text.clear();
     });
 
+    g_dragMotion = g_layoutManager->dragController()->m_events.motion.listen([] { trackDrop(); });
+    g_dragEnded  = g_layoutManager->dragController()->m_events.ended.listen([] { onDragEnded(); });
+
     g_marqueeTimer = makeShared<CEventLoopTimer>(std::nullopt, [](SP<CEventLoopTimer>, void*) { damageOwner(g_hover.owner); }, nullptr);
     g_pEventLoopManager->addTimer(g_marqueeTimer);
 
     HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "tab_at", luaTabAt);
     HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "drop_zone", luaDropZone);
 
+    for (const auto& w : Desktop::windowState()->windows())
+        attach(w);
+
     HyprlandAPI::reloadConfig();
 
-    return {"tabbar", "Group tab bars with app icons, hover, close button and per-corner rounding", "hadi", "0.1"};
+    return {"tabbar", "Group tab bars with app icons, hover, close button and per-corner rounding", "hadi", "0.2"};
 }
 
 APICALL EXPORT void PLUGIN_EXIT() {
+    g_dragMotion.reset();
+    g_dragEnded.reset();
     if (g_marqueeTimer) {
         g_pEventLoopManager->removeTimer(g_marqueeTimer);
         g_marqueeTimer.reset();
     }
-    for (auto& [ptr, entry] : g_rounded) {
-        if (const auto w = entry.first.lock())
-            (void)Config::Actions::setProp("rounding", "unset", w);
-    }
-    g_rounded.clear();
+    for (auto& [ptr, entry] : g_applied)
+        if (const auto w = entry.window.lock())
+            apply(w, false, "");
+    g_applied.clear();
+    g_decorations.clear();
     g_text.clear();
     g_closeTex.clear();
     clearIconCache();
