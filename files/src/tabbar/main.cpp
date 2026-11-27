@@ -87,6 +87,7 @@ namespace {
         PHLWINDOWREF owner;
         int          index   = -1;
         bool         onClose = false;
+        bool         onPlus  = false;
         std::chrono::steady_clock::time_point since;
     } g_hover;
 
@@ -102,7 +103,7 @@ namespace {
 
     constexpr double MARQUEE_DELAY = 0.6, MARQUEE_HOLD = 1.5, MARQUEE_SPEED = 40;
 
-    PHLWINDOWREF g_pressedClose;
+    PHLWINDOWREF g_pressedClose, g_pressedPlus;
 
     CHyprColor   color(const SP<Config::Values::CColorValue>& v) {
         return CHyprColor{sc<uint64_t>(v->value())};
@@ -324,6 +325,8 @@ namespace {
         float  top      = 0;
         size_t count    = 1;
         bool   capped   = false;
+        // The + after the last tab, with its gap.
+        float  plus     = 0;
     };
 
     // The tabs have whole device pixels and a gap of one device pixel, where the strip shows through.
@@ -340,7 +343,9 @@ namespace {
         SBarGeometry g;
         g.box               = assigned;
         g.count             = std::max<size_t>(1, bar->m_members.size());
-        const double fit    = std::floor((std::round(assigned.w * scale) - (g.count - 1)) / g.count);
+        const double plusPx = std::round(*PHEIGHT * scale) + 1;
+        g.plus              = plusPx / scale;
+        const double fit    = std::floor((std::round(assigned.w * scale) - plusPx - (g.count - 1)) / g.count);
         const double capPx  = std::floor(g_config.maxWidth->value() * scale);
         g.capped            = capPx < fit;
         g.tabWidth          = std::max(0.0, std::min(fit, capPx)) / scale;
@@ -351,13 +356,18 @@ namespace {
     }
 
     double tabsEnd(const SBarGeometry& g, size_t count) {
-        return g.capped ? g.box.x + count * (g.tabWidth + g.gap) - g.gap : g.box.x + g.box.w;
+        return g.capped ? g.box.x + count * (g.tabWidth + g.gap) - g.gap : g.box.x + g.box.w - g.plus;
+    }
+
+    // It opens a new tab: tabs_new_tab in tabs.lua.
+    CBox plusBox(const SBarGeometry& g) {
+        return {tabsEnd(g, g.count) + g.gap, g.top, g.height, g.height};
     }
 
     // Without the cap, the last tab takes the pixels that the even split leaves over.
     CBox tabBox(const SBarGeometry& g, size_t i) {
         const double x = g.box.x + i * (g.tabWidth + g.gap);
-        const double w = !g.capped && i + 1 == g.count ? g.box.x + g.box.w - x : g.tabWidth;
+        const double w = !g.capped && i + 1 == g.count ? g.box.x + g.box.w - g.plus - x : g.tabWidth;
         return {x, g.top, w, g.height};
     }
 
@@ -370,8 +380,8 @@ namespace {
         return tab.w < g_config.compactWidth->value();
     }
 
-    SP<Render::ITexture> closeTexture(int px, uint64_t rgba) {
-        const int key = px;
+    SP<Render::ITexture> closeTexture(int px, uint64_t rgba, bool plus = false) {
+        const int key = plus ? -px : px;
         if (auto it = g_closeTex.find(key); it != g_closeTex.end())
             return it->second;
 
@@ -382,10 +392,17 @@ namespace {
         cairo_set_line_width(cr, std::max(1.2, px / 9.0));
         cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
         const double m = px * 0.3;
-        cairo_move_to(cr, m, m);
-        cairo_line_to(cr, px - m, px - m);
-        cairo_move_to(cr, px - m, m);
-        cairo_line_to(cr, m, px - m);
+        if (plus) {
+            cairo_move_to(cr, px / 2.0, m);
+            cairo_line_to(cr, px / 2.0, px - m);
+            cairo_move_to(cr, m, px / 2.0);
+            cairo_line_to(cr, px - m, px / 2.0);
+        } else {
+            cairo_move_to(cr, m, m);
+            cairo_line_to(cr, px - m, px - m);
+            cairo_move_to(cr, px - m, m);
+            cairo_line_to(cr, m, px - m);
+        }
         cairo_stroke(cr);
         cairo_surface_flush(surface);
         auto tex = g_pHyprRenderer->createTexture(surface);
@@ -643,12 +660,24 @@ namespace {
                 addTex(ctx, closeTexture((int)cb.w, g_config.close->value()), cb, a);
             }
         }
+
+        const bool   plusHover = g_hover.owner == m_owner && g_hover.onPlus;
+        const auto   plus      = plusBox(g).translate(offset).scale(scale).round();
+        const double glyph     = std::round(std::min(18.0, g.height - 4.0) * scale);
+        const CBox   glyphBox  = CBox{plus.x + (plus.w - glyph) / 2.0, plus.y + (plus.h - glyph) / 2.0, glyph, glyph}.round();
+        if (plusHover) {
+            CHyprColor bg = color(g_config.closeHover);
+            bg.a *= alpha;
+            addRect(ctx, glyphBox, bg, Math::SCornerRadii{(float)(5 * scale)}, false, pres);
+        }
+        addTex(ctx, closeTexture((int)glyph, g_config.close->value(), true), glyphBox, alpha * (plusHover ? 1.F : 0.6F));
     }
 
     struct SHit {
         CTabBar* bar     = nullptr;
         int      index   = -1;
         bool     onClose = false;
+        bool     onPlus  = false;
     };
 
     SHit hitTest(CTabBar* bar, const Vector2D& pos) {
@@ -661,6 +690,8 @@ namespace {
                 continue;
             return {bar, (int)i, !compact(tab) && closeBox(tab).containsPoint(pos)};
         }
+        if (plusBox(g).containsPoint(pos))
+            return {bar, -1, false, true};
         return {};
     }
 
@@ -669,12 +700,12 @@ namespace {
             bar->damageEntire();
     }
 
-    void setHover(PHLWINDOWREF owner, int index, bool onClose) {
-        if (g_hover.owner == owner && g_hover.index == index && g_hover.onClose == onClose)
+    void setHover(PHLWINDOWREF owner, int index, bool onClose, bool onPlus = false) {
+        if (g_hover.owner == owner && g_hover.index == index && g_hover.onClose == onClose && g_hover.onPlus == onPlus)
             return;
         const auto old   = g_hover.owner;
         const bool moved = g_hover.owner != owner || g_hover.index != index;
-        g_hover          = {owner, index, onClose, moved ? std::chrono::steady_clock::now() : g_hover.since};
+        g_hover          = {owner, index, onClose, onPlus, moved ? std::chrono::steady_clock::now() : g_hover.since};
         damageOwner(old);
         if (owner != old)
             damageOwner(owner);
@@ -712,7 +743,7 @@ namespace {
         g_drag                  = {};
         const auto pos          = g_pInputManager->getMouseCoordsInternal();
         const auto [owner, hit] = barAt(pos);
-        if (!owner || hit.onClose || hyprlandDragging())
+        if (!owner || hit.onClose || hit.index < 0 || hyprlandDragging())
             return;
         const auto tab = tabBox(geometry(hit.bar, hit.bar->assignedBoxGlobal()), hit.index);
         g_drag         = {owner->grouping().group()->fromIndex(hit.index), pos, pos - tab.pos(), tab.size(), false};
@@ -843,8 +874,9 @@ namespace {
             for (size_t i = 0; i < hit.bar->m_members.size(); ++i)
                 if (hit.bar->m_members[i] == tab)
                     from = i;
-            const auto   target = tabBox(g, hit.index);
-            const double x      = hit.index > from ? target.x + target.w - 1 : target.x - 1;
+            const int    over   = hit.index < 0 ? (int)hit.bar->m_members.size() - 1 : hit.index;
+            const auto   target = tabBox(g, over);
+            const double x      = over > from ? target.x + target.w - 1 : target.x - 1;
             addRect(ctx, toPx(CBox{x, target.y, 2, target.h}), accent, Math::SCornerRadii{0.F}, false, pres);
         } else
             drawZone(ctx, mon, dropAt(pos, nullptr), current);
@@ -903,7 +935,7 @@ namespace {
             onDragMove(pos);
         const auto [owner, hit] = barAt(pos);
         if (owner)
-            setHover(owner, hit.index, hit.onClose);
+            setHover(owner, hit.index, hit.onClose, hit.onPlus);
         else
             setHover({}, -1, false);
     }
@@ -911,7 +943,7 @@ namespace {
     int luaTabAt(lua_State* L) {
         const Vector2D pos{luaL_checknumber(L, 1), luaL_checknumber(L, 2)};
         const auto [owner, hit] = barAt(pos);
-        const auto tab          = owner ? owner->grouping().group()->fromIndex(hit.index) : nullptr;
+        const auto tab          = owner && hit.index >= 0 ? owner->grouping().group()->fromIndex(hit.index) : nullptr;
         if (!tab) {
             lua_pushnil(L);
             return 1;
@@ -1044,6 +1076,18 @@ namespace {
         if (type != INPUT_TYPE_BUTTON)
             return false;
 
+        if (pastTabs && hit.onPlus) {
+            const auto e = std::any_cast<const IPointer::SButtonEvent&>(data);
+            if (e.button == BTN_LEFT && e.state == WL_POINTER_BUTTON_STATE_PRESSED)
+                g_pressedPlus = owner;
+            else if (e.button == BTN_LEFT && g_pressedPlus.lock() == owner) {
+                g_pressedPlus.reset();
+                const auto call = std::format("tabs_new_tab(\"{:x}\")", rc<uintptr_t>(owner->grouping().group()->current().get()));
+                g_pEventLoopManager->doLater([call] { HyprlandAPI::invokeHyprctlCommand("eval", call); });
+            }
+            return true;
+        }
+        g_pressedPlus.reset();
         if (pastTabs) {
             if (!Desktop::focusState()->isWindowActive(owner))
                 Desktop::focusState()->rawWindowFocus(owner, Desktop::FOCUS_REASON_CLICK);
