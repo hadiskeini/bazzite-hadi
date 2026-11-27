@@ -84,7 +84,7 @@ namespace {
         SP<Config::Values::CColorValue>  strip, focused, current, inactive, hover, urgent, accent, close, closeHover;
         SP<Config::Values::CIntValue>    accentHeight, iconSize, padding, compactWidth, maxWidth;
         SP<Config::Values::CStringValue> iconTheme;
-        SP<Config::Values::CFloatValue>  tiledShadow;
+        SP<Config::Values::CFloatValue>  tiledShadow, tiledShadowAlpha;
     } g_config;
 
     struct STextKey {
@@ -780,8 +780,21 @@ namespace {
         outlineDraw(g_borderHook, self, ctx, mon, a, pres);
     }
 
-    void hkShadowDraw(CHyprDropShadowDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
-        outlineDraw(g_shadowHook, self, ctx, mon, a, pres);
+    // Hyprland draws shadows in the render pass, after draw(); the size and the corners are computed there.
+    void hkShadowRender(CHyprDropShadowDecoration* self, CRenderContext& ctx, PHLMONITOR mon, float const& a, const SWindowRenderPresentation& pres) {
+        const auto window = self->m_window.lock();
+        const bool tiled  = window && !window->isFloating() && g_config.enabled->value();
+        const float alpha = tiled ? a * std::clamp(g_config.tiledShadowAlpha->value(), 0.F, 1.F) : a;
+        outlineDraw(g_shadowHook, self, ctx, mon, alpha, pres);
+    }
+
+    using FlagsFn = uint64_t (*)(CHyprGroupBarDecoration*);
+    CFunctionHook* g_flagsHook = nullptr;
+
+    // Part of the window: the shadow goes around the bar too (without a border nothing else includes it).
+    uint64_t hkBarFlags(CHyprGroupBarDecoration* self) {
+        const auto flags = ((FlagsFn)g_flagsHook->m_original)(self);
+        return g_config.enabled->value() ? flags | DECORATION_PART_OF_MAIN_WINDOW : flags;
     }
 
     using ShadowDataFn = SShadowRenderData (*)(CHyprDropShadowDecoration*, CRenderContext&, PHLMONITOR, float const&, const SWindowRenderPresentation&);
@@ -874,11 +887,12 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_config.compactWidth = makeShared<CIntValue>("plugin:tabbar:compact_width", "Below this tab width only the icon shows", 90);
     g_config.maxWidth     = makeShared<CIntValue>("plugin:tabbar:max_width", "Largest tab width", 240);
     g_config.tiledShadow  = makeShared<CFloatValue>("plugin:tabbar:tiled_shadow", "Shadow of tiled windows relative to floating ones (range and offset), 1 = the same", 0.35);
+    g_config.tiledShadowAlpha = makeShared<CFloatValue>("plugin:tabbar:tiled_shadow_alpha", "Opacity of the shadow of tiled windows relative to floating ones", 0.7);
     g_config.iconTheme    = makeShared<CStringValue>("plugin:tabbar:icon_theme", "Icon theme, hicolor is the fallback", "Adwaita");
 
     for (const auto& v : std::initializer_list<SP<IValue>>{g_config.enabled, g_config.strip, g_config.focused, g_config.current, g_config.inactive, g_config.hover, g_config.urgent,
                                                            g_config.accent, g_config.close, g_config.closeHover, g_config.accentHeight, g_config.iconSize, g_config.padding,
-                                                           g_config.compactWidth, g_config.maxWidth, g_config.iconTheme, g_config.tiledShadow})
+                                                           g_config.compactWidth, g_config.maxWidth, g_config.iconTheme, g_config.tiledShadow, g_config.tiledShadowAlpha})
         HyprlandAPI::addConfigValueV2(PHANDLE, v);
 
     const std::vector<std::tuple<CFunctionHook**, const char*, const char*, void*>> hooks = {
@@ -886,7 +900,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         {&g_inputHook, "onInputOnDeco", "CHyprGroupBarDecoration::onInputOnDeco(", (void*)&hkInput},
         {&g_posHook, "getPositioningInfo", "CHyprGroupBarDecoration::getPositioningInfo(", (void*)&hkPosInfo},
         {&g_borderHook, "draw", "CHyprBorderDecoration::draw(", (void*)&hkBorderDraw},
-        {&g_shadowHook, "draw", "CHyprDropShadowDecoration::draw(", (void*)&hkShadowDraw},
+        {&g_shadowHook, "render", "CHyprDropShadowDecoration::render(", (void*)&hkShadowRender},
+        {&g_flagsHook, "getDecorationFlags", "CHyprGroupBarDecoration::getDecorationFlags(", (void*)&hkBarFlags},
         {&g_roundHook, "rounding", "Desktop::View::CWindowPresentation::rounding(", (void*)&hkRounding},
         {&g_dropHook, "dragEnd", "Layout::Supplementary::CDragStateController::dragEnd(", (void*)&hkDragEnd},
         {&g_shadowDataHook, "getRenderData", "CHyprDropShadowDecoration::getRenderData(", (void*)&hkShadowData},
