@@ -42,12 +42,12 @@ stages:
       - type: script
         snippets:
           - dnf -y install dnf-plugins-core gcc-c++ pkgconf-pkg-config && dnf -y copr enable lionheartp/Hyprland && dnf -y install --setopt=install_weak_deps=False hyprland-git-devel
-          # A plugin that does not build must not stop the image: tabs.lua then uses Hyprland's own bar.
+          # A plugin that does not build must not stop the image: then Hyprland draws its own shadows and no drop zones.
           - >-
             mkdir -p /out && rpm -q --qf '%{VERSION}-%{RELEASE}' hyprland-git > /out/hyprland-version &&
             { g++ -shared -fPIC -O2 -std=c++2b -Wall -Wno-c++11-narrowing --no-gnu-unique
             $(pkg-config --cflags hyprland pixman-1 libdrm libinput libudev wayland-server xkbcommon hyprgraphics)
-            /src/main.cpp /src/icons.cpp -o /out/tabbar.so $(pkg-config --libs hyprgraphics)
+            /src/main.cpp -o /out/tabbar.so
             || echo "WARNING: tabbar plugin did not build; the image ships without it"; }
 
   - name: scyrox-tools
