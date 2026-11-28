@@ -48,6 +48,7 @@ extern "C" {
 #include <cairo/cairo.h>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <unordered_map>
 
@@ -940,6 +941,23 @@ namespace {
             setHover({}, -1, false);
     }
 
+    // True once the window's app has committed a frame at the size that Hyprland last configured: a window that
+    // shows before that shows its previous frame. tabs.lua waits for it before an app takes a new tab's place.
+    int luaReady(lua_State* L) {
+        const auto address = std::strtoull(luaL_checkstring(L, 1), nullptr, 16);
+        for (const auto& w : Desktop::windowState()->windows()) {
+            if (rc<uintptr_t>(w.get()) != address)
+                continue;
+            const auto& backend = w->backend();
+            const auto  drawn   = backend.geometry().box.size();
+            const auto  asked   = backend.reportedSize();
+            lua_pushboolean(L, w->mapped() && asked.x > 0 && std::abs(drawn.x - asked.x) < 1 && std::abs(drawn.y - asked.y) < 1);
+            return 1;
+        }
+        lua_pushboolean(L, false);
+        return 1;
+    }
+
     int luaTabAt(lua_State* L) {
         const Vector2D pos{luaL_checknumber(L, 1), luaL_checknumber(L, 2)};
         const auto [owner, hit] = barAt(pos);
@@ -1520,6 +1538,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_pEventLoopManager->addTimer(g_marqueeTimer);
 
     HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "tab_at", luaTabAt);
+    HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "ready", luaReady);
     HyprlandAPI::addLuaFunction(PHANDLE, "tabbar", "drop_zone", luaDropZone);
 
     for (const auto& w : Desktop::windowState()->windows())
